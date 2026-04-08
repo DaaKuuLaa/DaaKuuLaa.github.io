@@ -1,0 +1,16 @@
+================================================================================
+修改时间: 2026-03-31 16:05:30
+修改类型: 修复
+修改文件: js/visualizations.js
+修改位置: 模块5（对比分析）
+修改内容:
+  - 修复第五模块第二页的柏林噪声可视化缺失问题
+  - 恢复drawPerlinNoiseCompare函数，使其使用perlinNoiseCompare canvas（第二页的）
+  - 创建新的drawPerlinNoiseSimplexCompare函数，使其使用perlinNoiseSimplexCompare canvas（第三页的）
+  - 在drawComparison函数中添加对drawPerlinNoiseSimplexCompare函数的调用
+修改原因: 修复可视化显示问题，确保第二页和第三页的柏林噪声可视化都能正确显示
+相关任务: 模块5（对比分析）修复
+验证状态: 已验证
+验证结果: 第二页和第三页的柏林噪声可视化现在都可以正确显示
+修改人: WorkBuddy AI Assistant
+================================================================================

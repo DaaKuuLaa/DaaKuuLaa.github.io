@@ -1,0 +1,598 @@
+// ==========================================
+// 语言切换功能 - 完整版
+// Language Switcher Functionality - Full Version
+// ==========================================
+
+class LanguageSwitcher {
+    constructor() {
+        this.currentLanguage = 'zh'; // 默认中文
+        this.translations = {};
+        this.init();
+    }
+
+    init() {
+        this.loadTranslations();
+        this.bindEvents();
+        this.loadSavedLanguage();
+    }
+
+    // 加载翻译数据
+    loadTranslations() {
+        this.translations = {
+            zh: {
+                // 导航栏
+                'nav.module1': '问题引入',
+                'nav.module2': '肯·柏林',
+                'nav.module3': '算法原理',
+                'nav.module4': '参数演示',
+                'nav.module5': '对比分析',
+                'nav.module6': '总结',
+                'nav.progress': '进度',
+                
+                // 折叠标题
+                'collapsed.title': '柏林噪声算法',
+                
+                // 模块 1：问题引入
+                'module1.title': '第一部分：从问题开始',
+                'module1.description': '为什么需要柏林噪声？从实际问题出发，理解算法的诞生背景',
+                'module1.page1.title': '🎮 游戏开发者的挑战',
+                'module1.page1.problem': '想象你正在开发一款开放世界游戏，需要生成<span class="highlight">无限的自然地形</span>。',
+                'module1.page1.formula': '传统方法：每个点独立随机生成高度',
+                'module1.viz.regenerate': '重新生成',
+                'module1.viz.whiteNoise': '白噪声：每个点完全独立，地形看起来像"像素化"的噪声',
+                'module1.page2.title': '❌ 传统随机算法的三大问题',
+                'module1.page2.problem1': '缺乏连续性',
+                'module1.page2.problem1.desc': '相邻点数值跳跃剧烈，无规律可言',
+                'module1.page2.problem2': '不够自然',
+                'module1.page2.problem2.desc': '像素化块状，缺乏真实地形的平滑感',
+                'module1.page2.problem3': '难以控制',
+                'module1.page2.problem3.desc': '无法定向生成山脉、平原等地貌特征',
+                'module1.insight.title': '核心问题',
+                'module1.insight.content': '如何在<span class="highlight">随机性</span>和<span class="highlight">自然性</span>之间找到平衡？需要一种<strong>伪随机但连续平滑</strong>的算法。',
+                'module1.page3.title': '🏔️ 我们需要什么样的地形？',
+                'module1.page3.ideal': '理想的地形：随机且平滑，自然真实',
+                'module1.page3.action': '了解解决方案 →',
+                'module1.page1.navTitle': '问题背景',
+                'module1.page2.navTitle': '问题分析',
+                'module1.page3.navTitle': '解决方案',
+                
+                // 模块 2：肯·柏林
+                'module2.title': '第二部分：算法发明者',
+                'module2.description': '了解 Ken Perlin 的背景和算法发明的历史故事',
+                'module2.page1.navTitle': '人物简介',
+                'module2.page2.navTitle': '发明故事',
+                'module2.page1.timeline': '重要事件时间轴',
+                'module2.page1.event1.year': '1983',
+                'module2.page1.event1.title': '算法诞生',
+                'module2.page1.event1.desc': '为《Tron》开发特效时发明柏林噪声',
+                'module2.page1.event2.year': '1985',
+                'module2.page1.event2.title': '论文发表',
+                'module2.page1.event2.desc': 'SIGGRAPH 发表经典论文，算法广为人知',
+                'module2.page1.event3.year': '1997',
+                'module2.page1.event3.title': '奥斯卡奖',
+                'module2.page1.event3.desc': '获奥斯卡技术成就奖',
+                'module2.page1.event4.year': '2002',
+                'module2.page1.event4.title': 'Simplex 噪声',
+                'module2.page1.event4.desc': '改进算法，解决高维性能问题',
+                'module2.page1.fact': '算法命名：以发明者姓氏命名，"Perlin + Noise"',
+                'module2.page1.profile': '肯·柏林 (Ken Perlin)',
+                'module2.page1.meta1': '美国计算机科学家，纽约大学教授',
+                'module2.page1.meta2': '1983 年发明柏林噪声 | 1997 年获奥斯卡技术奖',
+                'module2.page2.story1.title': '发明背景',
+                'module2.page2.story1.cardTitle': '《Tron》电影的挑战',
+                'module2.page2.story1.cardContent': '1982 年，迪士尼电影《Tron》开创性地使用计算机生成图像。但 Ken Perlin 发现，计算机生成的纹理看起来<span class="highlight">太过人工</span>，缺乏自然界的有机感。',
+                'module2.page2.story2.title': '如何被想到的？',
+                'module2.page2.story2.card1Title': '从自然中寻找灵感',
+                'module2.page2.story2.card1Content': 'Perlin 观察自然现象：山脉的起伏、云朵的流动、大理石的纹理...它们都有共同特点：<span class="highlight">随机但连续</span>。他想：能否用数学模拟这种特性？',
+                'module2.page2.story2.card2Title': '核心突破',
+                'module2.page2.story2.card2Content': '将空间划分为网格，为每个顶点分配随机梯度，通过<span class="highlight">平滑插值</span>连接它们。这种方法产生的噪声既随机又连续，完美模拟自然！',
+                'module2.page2.story3.title': '带给我们的启发',
+                'module2.page2.story3.inspiration1': '观察自然，从中学习',
+                'module2.page2.story3.inspiration2': '在矛盾中寻找平衡（随机 vs 连续）',
+                'module2.page2.story3.inspiration3': '简单规则创造复杂美感',
+                'module2.page2.story3.inspiration4': '跨学科思维的重要价值',
+                
+                // 通用 UI
+                'ui.reload': '重新生成',
+                'ui.play': '演示计算过程',
+                'ui.reset': '重置',
+                'ui.random': '随机梯度',
+                'ui.heatmap': '全图噪声值',
+                'ui.speed': '速度',
+                'ui.prev': '上一模块',
+                'ui.next': '下一模块',
+                'ui.page': '页',
+                'ui.reference': '查看参考效果',
+                
+                // 按钮文本
+                'btn.randomSeed': '随机种子',
+                'btn.arrows': '箭头',
+                'btn.particles': '粒子',
+                'btn.trail': '拖尾',
+                'btn.noiseMap': '噪声图',
+                'btn.terrain': '地形',
+                'btn.flowField': '流场',
+                'btn.prevModule': '上一模块',
+                'btn.nextModule': '下一模块',
+                
+                // Canvas 可视化文字
+                'canvas.whiteNoise': '白噪声地形：太随机，不平滑',
+                'canvas.desiredTerrain': '柏林噪声地形：随机且平滑，自然真实',
+                'canvas.noiseTypes.whiteNoise': '白噪声',
+                'canvas.appScenarios.game': '游戏开发 - 地形生成'
+            },
+            en: {
+                // Navigation
+                'nav.module1': 'Problem',
+                'nav.module2': 'Ken Perlin',
+                'nav.module3': 'How It Works',
+                'nav.module4': 'Try It',
+                'nav.module5': 'Compare',
+                'nav.module6': 'Summary',
+                'nav.progress': 'Progress',
+                
+                // Collapsed Title
+                'collapsed.title': 'Perlin Noise',
+                
+                // Module 1: Problem Introduction
+                'module1.title': 'Part 1: Start with a Problem',
+                'module1.description': 'Why do we need Perlin Noise? Learn from a real problem.',
+                'module1.page1.title': '🎮 Game Maker Problem',
+                'module1.page1.problem': 'Imagine you make an open-world game. You need to create <span class="highlight">endless natural terrain</span>.',
+                'module1.page1.formula': 'Old way: Each point gets random height',
+                'module1.viz.regenerate': 'Try Again',
+                'module1.viz.whiteNoise': 'White noise: Each point is different. Looks like pixel blocks.',
+                'module1.page2.title': '❌ Three Big Problems',
+                'module1.page2.problem1': 'Not Continuous',
+                'module1.page2.problem1.desc': 'Next point jumps wildly. No pattern.',
+                'module1.page2.problem2': 'Not Natural',
+                'module1.page2.problem2.desc': 'Looks like blocks. Not smooth like real land.',
+                'module1.page2.problem3': 'Hard to Control',
+                'module1.page2.problem3.desc': 'Cannot make mountains or plains on purpose.',
+                'module1.insight.title': 'The Big Question',
+                'module1.insight.content': 'How to balance <span class="highlight">random</span> and <span class="highlight">natural</span>? We need math that is <strong>random but smooth</strong>.',
+                'module1.page3.title': '🏔️ What Terrain Do We Want?',
+                'module1.page3.ideal': 'Good terrain: Random and smooth. Looks real.',
+                'module1.page3.action': 'See the Solution →',
+                'module1.page1.navTitle': 'Problem',
+                'module1.page2.navTitle': 'Analysis',
+                'module1.page3.navTitle': 'Solution',
+                
+                // Module 2: Ken Perlin
+                'module2.title': 'Part 2: The Inventor',
+                'module2.description': 'Meet Ken Perlin and learn the invention story.',
+                'module2.page1.navTitle': 'Profile',
+                'module2.page2.navTitle': 'Story',
+                'module2.page1.timeline': 'Timeline',
+                'module2.page1.event1.year': '1983',
+                'module2.page1.event1.title': 'Born',
+                'module2.page1.event1.desc': 'Invented Perlin Noise for movie "Tron"',
+                'module2.page1.event2.year': '1985',
+                'module2.page1.event2.title': 'Paper',
+                'module2.page1.event2.desc': 'Published at SIGGRAPH. Became famous.',
+                'module2.page1.event3.year': '1997',
+                'module2.page1.event3.title': 'Oscar Prize',
+                'module2.page1.event3.desc': 'Won Academy Award for Technical Achievement',
+                'module2.page1.event4.year': '2002',
+                'module2.page1.event4.title': 'Simplex Noise',
+                'module2.page1.event4.desc': 'Made better version. Faster for 3D.',
+                'module2.page1.fact': 'Name: "Perlin" (inventor) + "Noise" (math)',
+                'module2.page1.profile': 'Ken Perlin',
+                'module2.page1.meta1': 'Computer scientist. NYU professor.',
+                'module2.page1.meta2': 'Invented Perlin Noise in 1983 | Won Oscar in 1997',
+                'module2.page2.story1.title': 'Background Story',
+                'module2.page2.story1.cardTitle': 'The "Tron" Movie Problem',
+                'module2.page2.story1.cardContent': 'In 1982, Disney made "Tron" with computer graphics. But Ken Perlin saw a problem: computer pictures looked <span class="highlight">too fake</span>. They lacked nature feel.',
+                'module2.page2.story2.title': 'How He Got the Idea',
+                'module2.page2.story2.card1Title': 'Learn from Nature',
+                'module2.page2.story2.card1Content': 'Perlin watched nature: mountains, clouds, marble stone... They shared one thing: <span class="highlight">random but continuous</span>. He asked: Can math do this?',
+                'module2.page2.story2.card2Title': 'Big Breakthrough',
+                'module2.page2.story2.card2Content': 'Divide space into grid. Give random direction to each corner. Use <span class="highlight">smooth math</span> to connect them. Result: random but continuous. Perfect for nature!',
+                'module2.page2.story3.title': 'Lessons for Us',
+                'module2.page2.story3.inspiration1': 'Watch nature. Learn from it.',
+                'module2.page2.story3.inspiration2': 'Find balance (random vs smooth)',
+                'module2.page2.story3.inspiration3': 'Simple rules make beautiful things',
+                'module2.page2.story3.inspiration4': 'Mix different subjects',
+                
+                // Module 2 Page 2 - Invention Story Details
+                'module2.page2.story1.icon': '🎬',
+                'module2.page2.story2.icon1': '🏔️',
+                'module2.page2.story2.icon2': '⚙️',
+                'module2.page2.story3.icon1': '👁️',
+                'module2.page2.story3.icon2': '⚖️',
+                'module2.page2.story3.icon3': '🛠️',
+                'module2.page2.story3.icon4': '🚀',
+                
+                // Module 3: How Algorithm Works
+                'module3.title': 'Part 3: How It Works',
+                'module3.description': 'Learn the 4 core steps of Perlin Noise algorithm',
+                'module3.page1.navTitle': 'Grid',
+                'module3.page2.navTitle': 'Gradient',
+                'module3.page3.navTitle': 'Dot Product',
+                'module3.page4.navTitle': 'Smooth',
+                'module3.page5.navTitle': 'Calculate',
+                'module3.page6.navTitle': 'Summary',
+                'module3.page1.title': 'Step 1: Grid Setup',
+                'module3.page1.desc': 'Divide space into regular grid. Each grid point has integer coordinates.',
+                'module3.page1.formula': 'gridX = ⌊x⌋, gridY = ⌊y⌋',
+                'module3.page1.formulaDesc': 'Floor function to get grid coordinates',
+                'module3.page2.title': 'Step 2: Gradient Vectors',
+                'module3.page2.desc': 'Give each grid point a random gradient vector (unit vector).',
+                'module3.page2.formula': 'g = (cos(θ), sin(θ)), θ ∈ [0, 2π]',
+                'module3.page2.formulaDesc': 'Random angle creates unit vector',
+                'module3.page2.regenerate': 'Regenerate',
+                'module3.page3.title': 'Step 3: Dot Product',
+                'module3.page3.desc': 'Calculate dot product of gradient vector and distance vector.',
+                'module3.page3.formula': 'dot = g · d = gₓ × dₓ + gᵧ × dᵧ',
+                'module3.page3.formulaDesc': 'Dot product shows gradient influence',
+                'module3.page3.viewAll': 'View Full Dot Product',
+                'module3.page3.mouseHint': 'Move mouse to see real-time dot product',
+                'module3.page4.title': 'Step 4: Smooth Interpolation',
+                'module3.page4.desc': 'Use smooth function (5th order polynomial) to interpolate the 4 corner dot products.',
+                'module3.page4.formula': 'smooth(t) = 6t⁵ - 15t⁴ + 10t³',
+                'module3.page4.formulaDesc': 't is relative position (0 to 1). Smooth function makes interpolation natural.',
+                'module3.page4.keyPoint': 'Key Property',
+                'module3.page4.keyPointDesc': 's(0)=0, s(1)=1, s\'(0)=s\'(1)=0. Zero derivative ensures smooth connection!',
+                'module3.page4.linearInterp': 'Linear Interpolation',
+                'module3.page4.linearInterpDesc': 'lerp(a, b, t) = a + (b - a) × t',
+                'module3.page4.linearInterpDetail': 'Two linear interpolations: first X axis, then Y axis',
+                'module3.page4.cornerA': 'Corner A:',
+                'module3.page4.cornerB': 'Corner B:',
+                'module3.page4.cornerC': 'Corner C:',
+                'module3.page4.cornerD': 'Corner D:',
+                // Module 3 Page 5: Noise Calculation
+                'module3.page5.title': 'Step 5: Noise Calculation',
+                'module3.page5.desc': 'Combine all steps. Calculate final Perlin Noise value with bilinear interpolation.',
+                'module3.page5.formulaTitle': 'Full Noise Formula',
+                'module3.page5.formulaDesc': 'First X axis, then Y axis',
+                'module3.page5.relativePos': 'Relative Position',
+                'module3.page5.relativePosDesc': 'Position inside cell',
+                'module3.page5.smoothFunc': 'Smooth Function',
+                'module3.page5.smoothFuncDesc': '5th order polynomial',
+                'module3.page5.lerpFunc': 'Linear Interpolation',
+                'module3.page5.lerpFuncDesc': 'Linear weighted average',
+                'module3.page5.vizTitle': 'Noise Calculation Flow',
+                'module3.page5.gradient': 'Gradient Vector',
+                'module3.page5.xInterp': 'X Interpolation',
+                'module3.page5.yInterp': 'Y Interpolation',
+                'module3.page5.playBtn': 'Play Demo',
+                'module3.page5.step1': 'Show gradient vectors & distance vectors',
+                'module3.page5.step2': 'X interpolation: Points E and F',
+                'module3.page5.step3': 'Y interpolation → Final noise value',
+                
+                // Module 3 Page 6: Summary
+                'module3.page6.title': 'Algorithm Summary',
+                'module3.page6.properties': 'Properties',
+                'module3.page6.property1': 'Continuity',
+                'module3.page6.property1.desc': 'Smooth transition between adjacent points',
+                'module3.page6.property2': 'Randomness',
+                'module3.page6.property2.desc': 'Random gradients create diverse noise',
+                'module3.page6.property3': 'Repeatability',
+                'module3.page6.property3.desc': 'Same coordinates produce same result',
+                'module3.page6.property4': 'Controllability',
+                'module3.page6.property4.desc': 'Control noise with parameters',
+                'module3.page6.core': 'Core Idea',
+                'module3.page6.core.desc': 'Perlin Noise finds perfect balance between <span class="highlight">pseudo-random gradients</span> and <span class="highlight">smooth interpolation</span>.',
+                
+                // Module 4: Try It
+                'module4.title': 'Part 4: Try It Yourself',
+                'module4.description': 'Adjust parameters and see Perlin Noise effects in real-time',
+                'module4.page1.navTitle': 'Controls',
+                'module4.page1.noiseParams': 'Noise Parameters',
+                'module4.page1.scale': 'Scale',
+                'module4.page1.octaves': 'Octaves',
+                'module4.page1.persistence': 'Persistence',
+                'module4.page1.lacunarity': 'Lacunarity',
+                'module4.page1.actions': 'Actions',
+                'module4.page1.flowField': 'Flow Field Controls',
+                'module4.page1.particleSettings': 'Particle Settings',
+                'module4.page1.particleCount': 'Particle Count',
+                'module4.page1.livePreview': 'Live Preview',
+                'module4.page1.currentEffect': 'Current Effect: <span id="currentPreset">Noise Map</span>',
+                
+                // Module 5: Compare
+                'module5.title': 'Part 5: Compare',
+                'module5.description': 'Compare different noise algorithms and their uses',
+                'module5.page1.navTitle': 'Types',
+                'module5.page2.navTitle': 'vs White Noise',
+                'module5.page3.navTitle': 'vs Simplex',
+                'module5.page4.navTitle': 'Applications',
+                'module5.page1.title': 'Noise Algorithm Types',
+                'module5.page1.whiteNoise': 'White Noise',
+                'module5.page1.whiteNoiseDesc': 'Completely random, no correlation',
+                'module5.page1.perlinNoise': 'Perlin Noise',
+                'module5.page1.perlinNoiseDesc': 'Pseudo-random, smooth and continuous',
+                'module5.page1.simplexNoise': 'Simplex Noise',
+                'module5.page1.simplexNoiseDesc': 'Improved Perlin Noise',
+                'module5.page1.fractalNoise': 'Fractal Noise',
+                'module5.page1.fractalNoiseDesc': 'Multiple noise layers',
+                'module5.page1.vizTitle': 'Noise Types Comparison',
+                'module5.page2.title': 'Perlin Noise vs White Noise',
+                'module5.page3.title': 'Perlin Noise vs Simplex Noise',
+                'module5.page4.title': 'Application Scenarios',
+                
+                // Module 6: Summary
+                'module6.title': 'Part 6: Summary',
+                'module6.description': 'Review key concepts and explore applications',
+                'module6.page1.navTitle': 'Review',
+                'module6.page2.navTitle': 'End',
+                'module6.page1.title': 'Key Concepts Review',
+                'module6.page1.coreAlgo': 'Algorithm Core',
+                'module6.page1.coreAlgoDesc': 'Balance <span class="highlight">random gradients</span> and <span class="highlight">smooth interpolation</span>',
+                'module6.page1.steps': 'Key Steps',
+                'module6.page1.stepsDesc': 'Grid → Gradient → Dot Product → Smooth → Calculate',
+                'module6.page1.idea': 'Core Idea',
+                'module6.page1.ideaDesc': 'Local calculation, global continuity. Smooth function makes natural transition.',
+                'module6.page1.value': 'Algorithm Value',
+                'module6.page1.valueDesc': 'Perlin Noise is a model of <span class="highlight">learning from nature</span>. Simple rules create complex beauty.',
+                'module6.page2.thanks': 'Thank You!',
+                'module6.page2.subtitle': 'You now understand Perlin Noise',
+                'module6.page2.explore': 'Keep Exploring',
+                'module6.page2.resources': 'Learning Resources',
+                
+                // Generic UI
+                'ui.reload': 'Reload',
+                'ui.play': 'Play',
+                'ui.reset': 'Reset',
+                'ui.random': 'Random',
+                'ui.heatmap': 'Noise Map',
+                'ui.speed': 'Speed',
+                'ui.prev': 'Previous',
+                'ui.next': 'Next',
+                'ui.page': 'Page',
+                'ui.reference': 'See Reference',
+                
+                // Button Text
+                'btn.randomSeed': 'Random Seed',
+                'btn.arrows': 'Arrows',
+                'btn.particles': 'Particles',
+                'btn.trail': 'Trail',
+                'btn.noiseMap': 'Noise Map',
+                'btn.terrain': 'Terrain',
+                'btn.flowField': 'Flow Field',
+                'btn.prevModule': 'Previous',
+                'btn.nextModule': 'Next',
+                
+                // Canvas Visualization Text
+                'canvas.whiteNoise': 'White noise terrain: Too random, not smooth',
+                'canvas.desiredTerrain': 'Perlin noise terrain: Random and smooth, looks natural',
+                'canvas.noiseTypes.whiteNoise': 'White Noise',
+                'canvas.appScenarios.game': 'Game Dev - Terrain Generation'
+            }
+        };
+    }
+
+    // 绑定事件
+    bindEvents() {
+        const languageToggleBtn = document.getElementById('languageToggleBtn');
+        if (languageToggleBtn) {
+            languageToggleBtn.addEventListener('click', () => this.toggleLanguage());
+        }
+        
+        // 添加键盘快捷键（L 键切换语言）
+        document.addEventListener('keydown', (e) => {
+            // 检查是否按下了 L 键，且不在输入框中
+            if (e.key === 'l' || e.key === 'L') {
+                // 如果焦点不在输入框或文本域中，则切换语言
+                if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+                    e.preventDefault();
+                    this.toggleLanguage();
+                }
+            }
+        });
+    }
+
+    // 加载保存的语言
+    loadSavedLanguage() {
+        const savedLanguage = localStorage.getItem('preferredLanguage');
+        if (savedLanguage && (savedLanguage === 'zh' || savedLanguage === 'en')) {
+            this.currentLanguage = savedLanguage;
+            this.updateLanguageButton();
+            this.applyTranslations();
+        }
+    }
+
+    // 切换语言
+    toggleLanguage() {
+        this.currentLanguage = this.currentLanguage === 'zh' ? 'en' : 'zh';
+        localStorage.setItem('preferredLanguage', this.currentLanguage);
+        this.updateLanguageButton();
+        this.applyTranslations();
+    }
+
+    // 更新语言按钮文本
+    updateLanguageButton() {
+        const languageText = document.querySelector('.language-text');
+        if (languageText) {
+            languageText.textContent = this.currentLanguage === 'zh' ? '中文' : 'English';
+        }
+    }
+
+    // 应用翻译
+    applyTranslations() {
+        const translations = this.translations[this.currentLanguage];
+        if (!translations) return;
+
+        // 更新所有带有 data-i18n 属性的元素
+        document.querySelectorAll('[data-i18n]').forEach(element => {
+            const key = element.getAttribute('data-i18n');
+            const translation = translations[key];
+            
+            if (translation !== undefined) {
+                if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+                    element.value = translation;
+                } else if (element.tagName === 'BUTTON' && !element.querySelector('span')) {
+                    // 按钮且没有子 span，直接设置文本
+                    const icon = element.querySelector('i');
+                    if (icon) {
+                        element.innerHTML = '';
+                        element.appendChild(icon.cloneNode(true));
+                        element.appendChild(document.createTextNode(' ' + translation));
+                    } else {
+                        element.textContent = translation;
+                    }
+                } else {
+                    element.innerHTML = translation;
+                }
+            }
+        });
+
+        // 更新导航按钮
+        this.updateNavigationButtons();
+        
+        // 更新模块标题和描述
+        this.updateModuleContent();
+        
+        // 触发语言切换事件，通知其他模块（如 Canvas 重绘）
+        document.dispatchEvent(new CustomEvent('languageChanged', { 
+            detail: { language: this.currentLanguage } 
+        }));
+        
+        // 更新页面导航标题
+        this.updatePageNavTitles();
+
+        // 触发语言变更事件
+        const event = new CustomEvent('languageChanged', {
+            detail: { language: this.currentLanguage }
+        });
+        document.dispatchEvent(event);
+        
+        console.log('Language applied:', this.currentLanguage);
+    }
+
+    // 更新导航按钮
+    updateNavigationButtons() {
+        const translations = this.translations[this.currentLanguage];
+        const navButtons = document.querySelectorAll('.nav-btn[data-module]');
+        
+        const moduleKeys = [
+            'nav.module1',
+            'nav.module2',
+            'nav.module3',
+            'nav.module4',
+            'nav.module5',
+            'nav.module6'
+        ];
+        
+        navButtons.forEach((button, index) => {
+            const key = moduleKeys[index];
+            if (key && translations[key]) {
+                const span = button.querySelector('span');
+                if (span) {
+                    span.textContent = translations[key];
+                }
+            }
+        });
+
+        // 更新进度文本
+        const progressText = document.querySelector('.progress-text');
+        if (progressText) {
+            const progressLabel = translations['nav.progress'] || 'Progress';
+            const currentModule = document.getElementById('currentModule')?.textContent || '1';
+            const totalModules = document.getElementById('totalModules')?.textContent || '6';
+            progressText.innerHTML = `${progressLabel}: <span id="currentModule">${currentModule}</span> / <span id="totalModules">${totalModules}</span>`;
+        }
+        
+        // 更新箭头按钮标题
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        if (prevBtn) {
+            prevBtn.setAttribute('title', translations['btn.prevModule'] || 'Previous Module');
+        }
+        if (nextBtn) {
+            nextBtn.setAttribute('title', translations['btn.nextModule'] || 'Next Module');
+        }
+    }
+
+    // 更新模块标题和描述
+    updateModuleContent() {
+        const translations = this.translations[this.currentLanguage];
+        
+        // 更新折叠标题
+        const collapsedTitle = document.querySelector('.collapsed-title h2');
+        if (collapsedTitle) {
+            const icon = collapsedTitle.querySelector('i');
+            if (icon && translations['collapsed.title']) {
+                collapsedTitle.innerHTML = '';
+                collapsedTitle.appendChild(icon.cloneNode(true));
+                collapsedTitle.appendChild(document.createTextNode(' ' + translations['collapsed.title']));
+            }
+        }
+        
+        // 更新模块标题和描述
+        const moduleHeaders = document.querySelectorAll('.module-header');
+        moduleHeaders.forEach((header, index) => {
+            const moduleId = index + 1;
+            const titleKey = `module${moduleId}.title`;
+            const descKey = `module${moduleId}.description`;
+            
+            const h2 = header.querySelector('h2');
+            const p = header.querySelector('.module-description p');
+            
+            if (h2 && translations[titleKey]) {
+                // 保留图标，只更新文本
+                const icon = h2.querySelector('i');
+                if (icon) {
+                    h2.innerHTML = '';
+                    h2.appendChild(icon.cloneNode(true));
+                    h2.appendChild(document.createTextNode(' ' + translations[titleKey]));
+                }
+            }
+            
+            if (p && translations[descKey]) {
+                p.textContent = translations[descKey];
+            }
+        });
+    }
+    
+    // 更新页面导航标题
+    updatePageNavTitles() {
+        const translations = this.translations[this.currentLanguage];
+        
+        // 更新所有页面导航按钮的 title 属性
+        document.querySelectorAll('.page-nav-btn[data-page]').forEach(button => {
+            const pageNav = button.closest('.page-nav');
+            if (!pageNav) return;
+            
+            const moduleId = pageNav.id.replace('page-nav-', '');
+            const pageId = button.getAttribute('data-page');
+            const key = `module${moduleId}.page${pageId}.navTitle`;
+            
+            if (translations[key]) {
+                button.setAttribute('title', translations[key]);
+            }
+        });
+    }
+
+    // 获取当前语言
+    getCurrentLanguage() {
+        return this.currentLanguage;
+    }
+
+    // 设置语言
+    setLanguage(language) {
+        if (language === 'zh' || language === 'en') {
+            this.currentLanguage = language;
+            localStorage.setItem('preferredLanguage', language);
+            this.updateLanguageButton();
+            this.applyTranslations();
+        }
+    }
+}
+
+// 初始化语言切换器
+document.addEventListener('DOMContentLoaded', () => {
+    window.languageSwitcher = new LanguageSwitcher();
+    console.log('Language switcher initialized');
+});
+
+// 全局函数
+function setLanguage(language) {
+    if (window.languageSwitcher) {
+        window.languageSwitcher.setLanguage(language);
+    }
+}
+
+function getCurrentLanguage() {
+    return window.languageSwitcher ? window.languageSwitcher.getCurrentLanguage() : 'zh';
+}

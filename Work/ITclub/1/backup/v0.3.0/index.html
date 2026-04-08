@@ -1,0 +1,1567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="柏林噪声算法深度解析 - 交互式演示课件">
+    <meta name="keywords" content="Perlin Noise, 柏林噪声, 算法, 计算机图形学, 程序化生成">
+    <meta name="author" content="教学演示">
+    
+    <title>柏林噪声算法深度解析 - 交互式演示</title>
+    
+    <!-- 外部CSS样式 -->
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/visualizations.css">
+    
+    <!-- 字体图标（可选） -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- 数学公式支持（可选） -->
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+    <!-- 页面加载动画 -->
+    <div id="loader" class="loader">
+        <div class="loader-content">
+            <i class="fas fa-cog fa-spin"></i>
+            <p>正在加载演示课件...</p>
+        </div>
+    </div>
+
+    <!-- 顶部导航栏 -->
+    <header class="navbar">
+        <div class="navbar-container">
+            <div class="navbar-brand">
+                <i class="fas fa-wave-square"></i>
+                <h1>柏林噪声算法</h1>
+            </div>
+            
+            <nav class="navbar-nav">
+                <button class="nav-btn" data-module="1" title="问题引入">
+                    <i class="fas fa-question-circle"></i>
+                    <span>问题引入</span>
+                </button>
+                <button class="nav-btn" data-module="2" title="算法发明者">
+                    <i class="fas fa-user"></i>
+                    <span>肯·柏林</span>
+                </button>
+                <button class="nav-btn" data-module="3" title="算法原理">
+                    <i class="fas fa-cogs"></i>
+                    <span>算法原理</span>
+                </button>
+                <button class="nav-btn" data-module="4" title="参数演示">
+                    <i class="fas fa-sliders-h"></i>
+                    <span>参数演示</span>
+                </button>
+                <button class="nav-btn" data-module="5" title="对比分析">
+                    <i class="fas fa-balance-scale"></i>
+                    <span>对比分析</span>
+                </button>
+                <button class="nav-btn" data-module="6" title="应用案例">
+                    <i class="fas fa-rocket"></i>
+                    <span>应用案例</span>
+                </button>
+                <button class="nav-btn" data-module="7" title="总结">
+                    <i class="fas fa-flag-checkered"></i>
+                    <span>总结</span>
+                </button>
+            </nav>
+            
+            <div class="navbar-controls">
+                <div class="progress-indicator">
+                    <span class="progress-text">进度: <span id="currentModule">1</span> / <span id="totalModules">7</span></span>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                </div>
+                
+                <div class="nav-arrows">
+                    <button class="nav-arrow" id="prevBtn" title="上一模块">
+                        <i class="fas fa-chevron-left"></i>
+                    </button>
+                    <button class="nav-arrow" id="nextBtn" title="下一模块">
+                        <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+        <!-- 折叠按钮 -->
+        <button class="navbar-collapse-btn" id="navbarCollapseBtn" title="折叠/展开标题栏">
+            <i class="fas fa-chevron-up"></i>
+        </button>
+    </header>
+
+    <!-- 折叠状态显示的标题 -->
+    <div class="collapsed-title">
+        <h2><i class="fas fa-wave-square"></i> 柏林噪声算法</h2>
+    </div>
+
+    <!-- 主要内容区域 -->
+    <main class="main-content">
+        <!-- 模块1：问题引入 -->
+        <section class="module active" id="module-1" data-module-id="1">
+            <div class="module-header">
+                <h2><i class="fas fa-question-circle"></i> 第一部分：从问题开始</h2>
+                <div class="module-description">
+                    <p>为什么需要柏林噪声？从实际问题出发，理解算法的诞生背景</p>
+                </div>
+            </div>
+            
+            <!-- 右侧页面导航 -->
+            <nav class="page-nav" id="page-nav-1">
+                <div class="page-nav-items">
+                    <button class="page-nav-btn active" data-page="1" title="问题背景"></button>
+                    <button class="page-nav-btn" data-page="2" title="问题分析"></button>
+                    <button class="page-nav-btn" data-page="3" title="解决方案"></button>
+                </div>
+                <div class="page-nav-info">
+                    <span class="page-current">1</span> / <span class="page-total">3</span>
+                </div>
+            </nav>
+            
+            <div class="module-content">
+                <!-- 第1页：问题背景 -->
+                <div class="page active" data-page="1">
+                    <div class="content-section">
+                        <h3>🎮 游戏开发者的挑战</h3>
+                        <div class="problem-card">
+                            <div class="problem-text">
+                                <p>想象你正在开发一款开放世界游戏，需要生成<span class="highlight">无限的自然地形</span>。</p>
+                            </div>
+                            <div class="problem-formula">
+                                <code>height = random()</code>
+                                <span class="formula-desc">传统方法：每个点独立随机生成高度</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="visualization-container">
+                        <div class="viz-header">
+                            <h4>传统随机算法的问题</h4>
+                            <div class="viz-controls">
+                                <button class="viz-btn" onclick="regenerateNoise('white')">
+                                    <i class="fas fa-sync"></i> 重新生成
+                                </button>
+                            </div>
+                        </div>
+                        <div class="viz-canvas">
+                            <canvas id="whiteNoiseCanvas" width="600" height="300"></canvas>
+                        </div>
+                        <div class="viz-info">
+                            <p><i class="fas fa-info-circle"></i> 白噪声：每个点完全独立，地形看起来像"像素化"的噪声</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第2页：问题分析（含可视化） -->
+                <div class="page" data-page="2">
+                    <div class="problem-analysis-layout">
+                        <div class="problem-analysis-title">
+                            <h4>❌ 传统随机算法的三大问题</h4>
+                        </div>
+                        <div class="problem-cards-row">
+                            <!-- 问题1：缺乏连续性 -->
+                            <div class="problem-card-viz">
+                                <div class="pcard-header pcard-danger">
+                                    <i class="fas fa-times-circle"></i>
+                                    <span>缺乏连续性</span>
+                                </div>
+                                <div class="pcard-canvas-wrap">
+                                    <canvas id="vizDiscontinuous" width="240" height="100"></canvas>
+                                </div>
+                                <p class="pcard-desc">相邻点数值跳跃剧烈，无规律可言</p>
+                            </div>
+                            <!-- 问题2：不够自然 -->
+                            <div class="problem-card-viz">
+                                <div class="pcard-header pcard-warning">
+                                    <i class="fas fa-times-circle"></i>
+                                    <span>不够自然</span>
+                                </div>
+                                <div class="pcard-canvas-wrap">
+                                    <canvas id="vizUnnatural" width="240" height="100"></canvas>
+                                </div>
+                                <p class="pcard-desc">像素化块状，缺乏真实地形的平滑感</p>
+                            </div>
+                            <!-- 问题3：难以控制 -->
+                            <div class="problem-card-viz">
+                                <div class="pcard-header pcard-purple">
+                                    <i class="fas fa-times-circle"></i>
+                                    <span>难以控制</span>
+                                </div>
+                                <div class="pcard-canvas-wrap">
+                                    <canvas id="vizUncontrollable" width="240" height="100"></canvas>
+                                </div>
+                                <p class="pcard-desc">无法定向生成山脉、平原等地貌特征</p>
+                            </div>
+                        </div>
+                        <div class="insight-box insight-compact">
+                            <div class="insight-icon">
+                                <i class="fas fa-lightbulb"></i>
+                            </div>
+                            <div class="insight-content">
+                                <h4>核心问题</h4>
+                                <p>如何在<span class="highlight">随机性</span>和<span class="highlight">自然性</span>之间找到平衡？需要一种<strong>伪随机但连续平滑</strong>的算法。</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第3页：解决方案 -->
+                <div class="page" data-page="3">
+                    <div class="solution-preview">
+                        <div class="viz-header">
+                            <h4>🏔️ 我们需要什么样的地形？</h4>
+                        </div>
+                        <div class="viz-canvas">
+                            <canvas id="desiredTerrain" width="600" height="300"></canvas>
+                        </div>
+                        <div class="viz-info">
+                            <p><i class="fas fa-check-circle"></i> 理想的地形：随机且平滑，自然真实</p>
+                        </div>
+                        <div class="solution-action">
+                            <button class="btn-primary" onclick="goToModule(2)">
+                                了解解决方案 →
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 页面控制按钮 -->
+            <div class="page-controls">
+                <button class="page-btn" id="prev-page-1" onclick="navigatePage(1, -1)">
+                    <i class="fas fa-chevron-up"></i>
+                </button>
+                <button class="page-btn" id="next-page-1" onclick="navigatePage(1, 1)">
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </div>
+        </section>
+
+        <!-- 模块2：肯·柏林简介 -->
+        <section class="module" id="module-2" data-module-id="2">
+            <div class="module-header">
+                <h2><i class="fas fa-user"></i> 第二部分：算法发明者</h2>
+                <div class="module-description">
+                    <p>了解Ken Perlin的背景和算法发明的历史故事</p>
+                </div>
+            </div>
+            
+            <!-- 右侧页面导航 - 改为2页 -->
+            <nav class="page-nav" id="page-nav-2">
+                <div class="page-nav-items">
+                    <button class="page-nav-btn active" data-page="1" title="人物简介"></button>
+                    <button class="page-nav-btn" data-page="2" title="发明故事"></button>
+                </div>
+                <div class="page-nav-info">
+                    <span class="page-current">1</span> / <span class="page-total">2</span>
+                </div>
+            </nav>
+            
+            <div class="module-content">
+                <!-- 第1页：人物简介与重要事件时间轴 -->
+                <div class="page active" data-page="1">
+                    <div class="perlin-intro-layout">
+                        <div class="perlin-profile-row">
+                            <div class="person-avatar">
+                                <div class="avatar-placeholder">
+                                    <i class="fas fa-user-tie"></i>
+                                </div>
+                            </div>
+                            <div class="person-details">
+                                <h3>肯·柏林 (Ken Perlin)</h3>
+                                <div class="person-meta">
+                                    <div class="meta-item">
+                                        <i class="fas fa-briefcase"></i>
+                                        <span>美国计算机科学家，纽约大学教授</span>
+                                    </div>
+                                    <div class="meta-item">
+                                        <i class="fas fa-trophy"></i>
+                                        <span>1983年发明柏林噪声 | 1997年获奥斯卡技术奖</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="important-events-timeline">
+                            <h4><i class="fas fa-history"></i> 重要事件时间轴</h4>
+                            <div class="events-timeline-container">
+                                <div class="event-item">
+                                    <div class="event-year">1983</div>
+                                    <div class="event-title">算法诞生</div>
+                                    <div class="event-desc">为《Tron》开发特效时发明柏林噪声</div>
+                                </div>
+                                <div class="event-item">
+                                    <div class="event-year">1985</div>
+                                    <div class="event-title">论文发表</div>
+                                    <div class="event-desc">SIGGRAPH发表经典论文，算法广为人知</div>
+                                </div>
+                                <div class="event-item">
+                                    <div class="event-year">1997</div>
+                                    <div class="event-title">奥斯卡奖</div>
+                                    <div class="event-desc">获奥斯卡技术成就奖</div>
+                                </div>
+                                <div class="event-item">
+                                    <div class="event-year">2002</div>
+                                    <div class="event-title">Simplex噪声</div>
+                                    <div class="event-desc">改进算法，解决高维性能问题</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="fact-box-compact">
+                            <i class="fas fa-star"></i>
+                            <span><strong>算法命名</strong>：以发明者姓氏命名，"Perlin + Noise"</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 第2页：算法发明的背景故事与启发 -->
+                <div class="page" data-page="2">
+                    <div class="invention-story-layout">
+                        <div class="story-section">
+                            <h3><i class="fas fa-lightbulb"></i> 发明背景</h3>
+                            <div class="story-card">
+                                <div class="story-icon">
+                                    <i class="fas fa-film"></i>
+                                </div>
+                                <div class="story-content">
+                                    <h4>《Tron》电影的挑战</h4>
+                                    <p>1982年，迪士尼电影《Tron》开创性地使用计算机生成图像。但Ken Perlin发现，计算机生成的纹理看起来<span class="highlight">太过人工</span>，缺乏自然界的有机感。</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="story-section">
+                            <h3><i class="fas fa-brain"></i> 如何被想到的？</h3>
+                            <div class="story-card">
+                                <div class="story-icon">
+                                    <i class="fas fa-mountain"></i>
+                                </div>
+                                <div class="story-content">
+                                    <h4>从自然中寻找灵感</h4>
+                                    <p>Perlin观察自然现象：山脉的起伏、云朵的流动、大理石的纹理...它们都有共同特点：<span class="highlight">随机但连续</span>。他想：能否用数学模拟这种特性？</p>
+                                </div>
+                            </div>
+                            <div class="story-card">
+                                <div class="story-icon">
+                                    <i class="fas fa-cogs"></i>
+                                </div>
+                                <div class="story-content">
+                                    <h4>核心突破</h4>
+                                    <p>将空间划分为网格，为每个顶点分配随机梯度，通过<span class="highlight">平滑插值</span>连接它们。这种方法产生的噪声既随机又连续，完美模拟自然！</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="story-section">
+                            <h3><i class="fas fa-graduation-cap"></i> 带给我们的启发</h3>
+                            <div class="inspiration-grid">
+                                <div class="inspiration-item">
+                                    <i class="fas fa-eye"></i>
+                                    <span>观察自然，从中学习</span>
+                                </div>
+                                <div class="inspiration-item">
+                                    <i class="fas fa-balance-scale"></i>
+                                    <span>在矛盾中寻找平衡（随机vs连续）</span>
+                                </div>
+                                <div class="inspiration-item">
+                                    <i class="fas fa-tools"></i>
+                                    <span>简单规则创造复杂美感</span>
+                                </div>
+                                <div class="inspiration-item">
+                                    <i class="fas fa-rocket"></i>
+                                    <span>跨学科思维的重要价值</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 页面控制按钮 -->
+            <div class="page-controls">
+                <button class="page-btn" id="prev-page-2" onclick="navigatePage(2, -1)">
+                    <i class="fas fa-chevron-up"></i>
+                </button>
+                <button class="page-btn" id="next-page-2" onclick="navigatePage(2, 1)">
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </div>
+        </section>
+
+        <!-- 模块3：算法原理 -->
+        <section class="module" id="module-3" data-module-id="3">
+            <div class="module-header">
+                <h2><i class="fas fa-cogs"></i> 第三部分：算法核心原理</h2>
+                <div class="module-description">
+                    <p>深入理解柏林噪声算法的四个核心步骤</p>
+                </div>
+            </div>
+            
+            <!-- 右侧页面导航 -->
+            <nav class="page-nav" id="page-nav-3">
+                <div class="page-nav-items">
+                    <button class="page-nav-btn active" data-page="1" title="网格划分"></button>
+                    <button class="page-nav-btn" data-page="2" title="梯度向量"></button>
+                    <button class="page-nav-btn" data-page="3" title="点乘运算"></button>
+                    <button class="page-nav-btn" data-page="4" title="平滑处理"></button>
+                    <button class="page-nav-btn" data-page="5" title="噪声计算"></button>
+                    <button class="page-nav-btn" data-page="6" title="可视化演示"></button>
+                    <button class="page-nav-btn" data-page="7" title="算法总结"></button>
+                </div>
+                <div class="page-nav-info">
+                    <span class="page-current">1</span> / <span class="page-total">7</span>
+                </div>
+            </nav>
+            
+            <div class="module-content">
+                <!-- 第1页：网格划分 -->
+                <div class="page active" data-page="1">
+                    <div class="algorithm-steps">
+                        <div class="step-item">
+                            <div class="step-number">1</div>
+                            <div class="step-content">
+                                <h4>网格划分 (Grid Setup)</h4>
+                                <p>将空间划分为规则网格，每个网格顶点有固定的整数坐标。</p>
+                                <div class="formula-box">
+                                    <code>gridX = ⌊x⌋, gridY = ⌊y⌋</code>
+                                    <span class="formula-desc">向下取整得到网格坐标</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 可视化预览区域 -->
+                    <div class="viz-preview-area">
+                        <div class="viz-canvas">
+                            <canvas id="step1Canvas" width="500" height="300"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第2页：梯度向量 -->
+                <div class="page" data-page="2">
+                    <div class="algorithm-steps">
+                        <div class="step-item">
+                            <div class="step-number">2</div>
+                            <div class="step-content">
+                                <h4>梯度向量 (Gradient Vectors)</h4>
+                                <p>为每个网格顶点分配一个随机梯度向量（单位向量）。</p>
+                                <div class="formula-box">
+                                    <code>g = (cos(θ), sin(θ)), θ ∈ [0, 2π]</code>
+                                    <span class="formula-desc">随机角度生成单位向量</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 可视化预览区域 -->
+                    <div class="viz-preview-area">
+                        <div class="viz-canvas">
+                            <canvas id="step2Canvas" width="500" height="300"></canvas>
+                        </div>
+                        <div class="viz-controls">
+                            <button class="viz-btn" onclick="regenerateGradients()">
+                                <i class="fas fa-sync"></i> 重新生成
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第3页：点乘运算 -->
+                <div class="page" data-page="3">
+                    <div class="algorithm-steps">
+                        <div class="step-item">
+                            <div class="step-number">3</div>
+                            <div class="step-content">
+                                <h4>点乘运算 (Dot Product)</h4>
+                                <p>计算每个顶点的梯度向量与到该顶点距离向量的点乘。</p>
+                                <div class="formula-box">
+                                    <code>dot = g · d = gₓ × dₓ + gᵧ × dᵧ</code>
+                                    <span class="formula-desc">点乘结果表示梯度对当前点的影响</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 可视化预览区域 -->
+                    <div class="viz-preview-area">
+                        <div class="viz-canvas">
+                            <canvas id="step3Canvas" width="500" height="300"></canvas>
+                        </div>
+                        <div class="viz-controls" style="margin-top: 10px;">
+                            <button class="viz-btn" onclick="toggleDotProductView()" id="dotProductToggleBtn">
+                                <i class="fas fa-eye"></i> 查看全图点积
+                            </button>
+                        </div>
+                        <div class="viz-info" style="margin-top: 10px;">
+                            <p><i class="fas fa-mouse-pointer"></i> 移动鼠标查看实时的点乘计算结果</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第4页：平滑处理 -->
+                <div class="page" data-page="4">
+                    <div class="algorithm-steps">
+                        <div class="step-item">
+                            <div class="step-number">4</div>
+                            <div class="step-content" style="display: flex; flex-direction: row; gap: 20px; align-items: flex-start;">
+                                <div style="flex: 1; min-width: 0;">
+                                    <h4>平滑处理 (Smooth Interpolation)</h4>
+                                    <p>使用平滑的插值函数（5阶多项式）对4个角点的点乘结果进行插值，获得平滑连续的噪声值。</p>
+                                    <div class="formula-box">
+                                        <code>smooth(t) = 6t⁵ - 15t⁴ + 10t³</code>
+                                        <span class="formula-desc">t 表示单元格内的相对位置（0到1之间），平滑函数使插值更自然</span>
+                                    </div>
+                                </div>
+                                <div style="flex: 0 0 380px; min-width: 0;">
+                                    <div class="insight-box" style="border-left: 4px solid #ffab00; margin-bottom: 10px;">
+                                        <div class="insight-icon">
+                                            <i class="fas fa-exclamation-triangle"></i>
+                                        </div>
+                                        <div class="insight-content">
+                                            <p><strong>关键性质：</strong>s(0)=0, s(1)=1, s'(0)=s'(1)=0。导数为0确保相邻网格切线连续，视觉上无缝衔接！</p>
+                                        </div>
+                                    </div>
+                                    <div class="insight-box" style="border-left: 4px solid #2196f3;">
+                                        <div class="insight-icon">
+                                            <i class="fas fa-info-circle"></i>
+                                        </div>
+                                        <div class="insight-content">
+                                            <p><strong>线性插值：</strong> lerp(a, b, t) = a + (b - a) × t</p>
+                                            <p style="margin: 5px 0 0 0; font-size: 12px; color: var(--text-secondary);">通过两次线性插值，先沿X轴，再沿Y轴</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 可视化预览区域 - 放大尺寸 -->
+                    <div class="viz-preview-area">
+                        <div class="viz-canvas">
+                            <canvas id="step4Canvas" width="600" height="380"></canvas>
+                        </div>
+                        <div class="viz-controls" style="margin-top: 15px;">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                <label style="color: var(--text-secondary); min-width: 80px;">角点A:</label>
+                                <input type="range" id="cornerAValue" min="0.1" max="0.9" step="0.1" value="0.3" style="flex: 1;">
+                                <span id="cornerAValueDisplay" style="color: var(--text-primary); min-width: 40px;">0.3</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                <label style="color: var(--text-secondary); min-width: 80px;">角点B:</label>
+                                <input type="range" id="cornerBValue" min="0.1" max="0.9" step="0.1" value="0.6" style="flex: 1;">
+                                <span id="cornerBValueDisplay" style="color: var(--text-primary); min-width: 40px;">0.6</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                <label style="color: var(--text-secondary); min-width: 80px;">角点C:</label>
+                                <input type="range" id="cornerCValue" min="0.1" max="0.9" step="0.1" value="0.4" style="flex: 1;">
+                                <span id="cornerCValueDisplay" style="color: var(--text-primary); min-width: 40px;">0.4</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <label style="color: var(--text-secondary); min-width: 80px;">角点D:</label>
+                                <input type="range" id="cornerDValue" min="0.1" max="0.9" step="0.1" value="0.7" style="flex: 1;">
+                                <span id="cornerDValueDisplay" style="color: var(--text-primary); min-width: 40px;">0.7</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第5页：噪声计算 -->
+                <div class="page" data-page="5">
+                    <div class="noise-calculation-container">
+                        <!-- 左侧：算法说明 -->
+                        <div class="noise-algorithm-info">
+                            <div class="step-item blur-card">
+                                <div class="step-number">5</div>
+                                <div class="step-content">
+                                    <h4 class="gradient-text">噪声值计算 (Noise Value Calculation)</h4>
+                                    <p class="text-muted">综合所有步骤，计算最终的柏林噪声值。通过双线性插值结合平滑函数，得到连续自然的噪声值。</p>
+                                    
+                                    <!-- 主公式卡片 -->
+                                    <div class="main-formula-card blur-card">
+                                        <div class="formula-header">
+                                            <i class="fas fa-calculator"></i>
+                                            <span>完整噪声计算公式</span>
+                                        </div>
+                                        <code class="formula-main">noise = lerp( lerp(n00, n10, S(u)), lerp(n01, n11, S(u)), S(v) )</code>
+                                        <div class="formula-desc">
+                                            <i class="fas fa-arrow-right"></i>
+                                            <span>先沿X轴插值，再沿Y轴插值</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 子公式网格 -->
+                                    <div class="sub-formula-grid">
+                                        <div class="sub-formula-card blur-card">
+                                            <div class="formula-card-header" style="border-left-color: var(--success);">
+                                                <i class="fas fa-ruler-combined"></i>
+                                                <span>相对位置计算</span>
+                                            </div>
+                                            <code class="formula-sub">u = x - floor(x)</code>
+                                            <code class="formula-sub">v = y - floor(y)</code>
+                                            <div class="formula-card-footer">
+                                                <i class="fas fa-info-circle"></i>
+                                                <span>单元格内相对位置</span>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="sub-formula-card blur-card">
+                                            <div class="formula-card-header" style="border-left-color: var(--warning);">
+                                                <i class="fas fa-wave-square"></i>
+                                                <span>平滑插值函数</span>
+                                            </div>
+                                            <code class="formula-sub">S(t) = 6t⁵ - 15t⁴ + 10t³</code>
+                                            <div class="formula-card-footer">
+                                                <i class="fas fa-info-circle"></i>
+                                                <span>五次多项式平滑</span>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="sub-formula-card blur-card full-width">
+                                            <div class="formula-card-header" style="border-left-color: var(--primary);">
+                                                <i class="fas fa-exchange-alt"></i>
+                                                <span>线性插值函数</span>
+                                            </div>
+                                            <code class="formula-sub">lerp(a, b, t) = a + (b - a) * t</code>
+                                            <div class="formula-card-footer">
+                                                <i class="fas fa-info-circle"></i>
+                                                <span>线性加权平均</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 右侧：可视化区域 -->
+                        <div class="noise-visualization-area">
+                            <div class="viz-container blur-card">
+                                <div class="viz-header">
+                                    <h5><i class="fas fa-cube"></i> 噪声计算流程可视化</h5>
+                                    <div class="viz-stats">
+                                        <div class="stat-item">
+                                            <i class="fas fa-circle" style="color: var(--success);"></i>
+                                            <span>梯度向量</span>
+                                        </div>
+                                        <div class="stat-item">
+                                            <i class="fas fa-circle" style="color: var(--warning);"></i>
+                                            <span>X轴插值</span>
+                                        </div>
+                                        <div class="stat-item">
+                                            <i class="fas fa-circle" style="color: #a855f7;"></i>
+                                            <span>Y轴插值</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="viz-canvas-wrapper">
+                                    <canvas id="noiseCalculationCanvas" width="640" height="380"></canvas>
+                                </div>
+                                
+                                <div class="viz-controls">
+                                    <button class="viz-btn" onclick="animateNoiseCalculation()">
+                                        <i class="fas fa-play"></i> 演示计算过程
+                                    </button>
+                                    <button class="viz-btn secondary" onclick="resetNoiseVisualization()">
+                                        <i class="fas fa-redo"></i> 重置
+                                    </button>
+                                    <button class="viz-btn secondary" onclick="window.noiseCalcViz && window.noiseCalcViz.randomizeGradients()">
+                                        <i class="fas fa-random"></i> 随机梯度
+                                    </button>
+                                    <button class="viz-btn secondary" id="toggleHeatmapBtn">
+                                        <i class="fas fa-th"></i> 全图噪声值
+                                    </button>
+                                    <div class="slider-control">
+                                        <label for="calculationSpeed">速度</label>
+                                        <input type="range" id="calculationSpeed" min="1" max="10" value="5">
+                                    </div>
+                                </div>
+                                
+                                <div class="viz-info" id="noiseCalcSteps">
+                                    <div class="info-step active">
+                                        <i class="fas fa-dot-circle" style="color: var(--success);"></i>
+                                        <span>展示梯度向量 &amp; 距离向量</span>
+                                    </div>
+                                    <div class="info-step">
+                                        <i class="fas fa-arrow-right" style="color: var(--warning);"></i>
+                                        <span>X轴插值：E 点和 F 点</span>
+                                    </div>
+                                    <div class="info-step">
+                                        <i class="fas fa-arrow-down" style="color: #a855f7;"></i>
+                                        <span>Y轴插值 → 最终噪声值</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第6页：可视化演示 -->
+                <div class="page" data-page="6">
+                    <div class="visualization-container">
+                        <div class="viz-tabs">
+                            <button class="viz-tab active" data-viz="grid">网格划分</button>
+                            <button class="viz-tab" data-viz="gradient">梯度向量</button>
+                            <button class="viz-tab" data-viz="dotproduct">点乘运算</button>
+                            <button class="viz-tab" data-viz="interpolation">插值平滑</button>
+                        </div>
+                        
+                        <div class="viz-content">
+                            <div class="viz-canvas">
+                                <canvas id="algorithmCanvas" width="600" height="400"></canvas>
+                            </div>
+                            <div class="viz-controls">
+                                <button class="viz-btn" onclick="generateNewGrid()">
+                                    <i class="fas fa-sync"></i> 重新生成网格
+                                </button>
+                                <button class="viz-btn" onclick="toggleGridLines()">
+                                    <i class="fas fa-th"></i> 显示/隐藏网格
+                                </button>
+                            </div>
+                            <div class="viz-info" id="vizInfo">
+                                <p><i class="fas fa-info-circle"></i> 网格划分：将空间分为规则的单元格，便于局部计算</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第7页：算法特点总结 -->
+                <div class="page" data-page="7">
+                    <div class="properties-with-visualization">
+                        <h4>🎯 算法特点总结</h4>
+                        <div class="properties-viz-grid">
+                            <div class="property-viz-item">
+                                <div class="property-card">
+                                    <div class="property-icon">
+                                        <i class="fas fa-link"></i>
+                                    </div>
+                                    <div class="property-content">
+                                        <h5>连续性</h5>
+                                        <p>相邻点的值平滑过渡</p>
+                                    </div>
+                                </div>
+                                <div class="property-viz-canvas">
+                                    <canvas id="vizContinuity" width="220" height="80"></canvas>
+                                </div>
+                            </div>
+                            <div class="property-viz-item">
+                                <div class="property-card">
+                                    <div class="property-icon">
+                                        <i class="fas fa-random"></i>
+                                    </div>
+                                    <div class="property-content">
+                                        <h5>随机性</h5>
+                                        <p>梯度向量的随机性保证噪声多样性</p>
+                                    </div>
+                                </div>
+                                <div class="property-viz-canvas">
+                                    <canvas id="vizRandomness" width="220" height="80"></canvas>
+                                </div>
+                            </div>
+                            <div class="property-viz-item">
+                                <div class="property-card">
+                                    <div class="property-icon">
+                                        <i class="fas fa-redo"></i>
+                                    </div>
+                                    <div class="property-content">
+                                        <h5>可重复性</h5>
+                                        <p>相同坐标产生相同结果</p>
+                                    </div>
+                                </div>
+                                <div class="property-viz-canvas">
+                                    <canvas id="vizRepeatability" width="220" height="80"></canvas>
+                                </div>
+                            </div>
+                            <div class="property-viz-item">
+                                <div class="property-card">
+                                    <div class="property-icon">
+                                        <i class="fas fa-sliders-h"></i>
+                                    </div>
+                                    <div class="property-content">
+                                        <h5>可控性</h5>
+                                        <p>通过参数控制噪声特性</p>
+                                    </div>
+                                </div>
+                                <div class="property-viz-canvas">
+                                    <canvas id="vizControllability" width="220" height="80"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="insight-box" style="max-width: 700px; margin: var(--spacing-md) auto;">
+                        <div class="insight-icon">
+                            <i class="fas fa-lightbulb"></i>
+                        </div>
+                        <div class="insight-content">
+                            <h4>核心思想</h4>
+                            <p>柏林噪声通过<span class="highlight">伪随机梯度</span>和<span class="highlight">平滑插值</span>，在随机性与自然性之间找到完美平衡。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 页面控制按钮 -->
+            <div class="page-controls">
+                <button class="page-btn" id="prev-page-3" onclick="navigatePage(3, -1)">
+                    <i class="fas fa-chevron-up"></i>
+                </button>
+                <button class="page-btn" id="next-page-3" onclick="navigatePage(3, 1)">
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </div>
+        </section>
+
+        <!-- 模块4：参数控制与演示 -->
+        <section class="module" id="module-4" data-module-id="4">
+            <div class="module-header">
+                <h2><i class="fas fa-sliders-h"></i> 第四部分：参数控制与演示</h2>
+                <div class="module-description">
+                    <p>通过参数调节，实时观察柏林噪声的效果变化</p>
+                </div>
+            </div>
+            
+            <!-- 右侧页面导航 -->
+            <nav class="page-nav" id="page-nav-4">
+                <div class="page-nav-items">
+                    <button class="page-nav-btn active" data-page="1" title="参数控制与效果预览"></button>
+                </div>
+                <div class="page-nav-info">
+                    <span class="page-current">1</span> / <span class="page-total">1</span>
+                </div>
+            </nav>
+            
+            <div class="module-content">
+                <!-- 合并后的页面：参数控制与效果预览 -->
+                <div class="page active" data-page="1">
+                    <div class="parameter-demo-layout">
+                        <!-- 左侧控制面板 -->
+                        <div class="control-panel">
+                            <div class="control-section">
+                                <h4><i class="fas fa-sliders"></i> 噪声参数</h4>
+                                <div class="control-item">
+                                    <label>缩放 Scale <span id="scaleVal">0.004</span></label>
+                                    <input type="range" id="scaleSlider" min="1" max="50" value="15">
+                                </div>
+                                <div class="control-item">
+                                    <label>叠加层数 Octaves <span id="octavesVal">4</span></label>
+                                    <input type="range" id="octavesSlider" min="1" max="8" value="4">
+                                </div>
+                                <div class="control-item">
+                                    <label>持续度 Persistence <span id="persistenceVal">0.50</span></label>
+                                    <input type="range" id="persistenceSlider" min="10" max="90" value="50">
+                                </div>
+                                <div class="control-item">
+                                    <label>空隙度 Lacunarity <span id="lacunarityVal">2.00</span></label>
+                                    <input type="range" id="lacunaritySlider" min="10" max="40" value="20">
+                                </div>
+
+                            </div>
+                            
+                            <div class="control-section">
+                                <h4><i class="fas fa-magic"></i> 操作</h4>
+                                <button class="control-btn" onclick="randomizeSeed()">
+                                    <i class="fas fa-random"></i> 随机种子
+                                </button>
+                            </div>
+                            
+                            <div class="control-section">
+                                <h4><i class="fas fa-stream"></i> 流场控制</h4>
+                                <button class="control-btn" id="toggleArrowsBtn">
+                                    <i class="fas fa-arrows-alt"></i> 箭头
+                                </button>
+                                <button class="control-btn" id="toggleParticlesBtn">
+                                    <i class="fas fa-dust"></i> 粒子
+                                </button>
+                                <button class="control-btn" id="toggleFadeBtn">
+                                    <i class="fas fa-tint"></i> 拖尾
+                                </button>
+                            </div>
+                            
+                            <div class="control-section">
+                                <h4><i class="fas fa-dust"></i> 粒子设置</h4>
+                                <div class="control-item">
+                                    <label>粒子数量 <span id="particleCountVal">1000</span></label>
+                                    <input type="range" id="particleCountSlider" min="100" max="10000" value="1000">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 右侧预览区域 -->
+                        <div class="preview-area">
+                            <div class="preview-header">
+                                <h4>实时预览</h4>
+                                <div class="preview-stats">
+                                    <span>当前效果: <span id="currentPreset">噪声图</span></span>
+                                </div>
+                            </div>
+                            
+                            <!-- 效果选择按钮栏 -->
+                            <div class="effect-selector">
+                                <button class="effect-btn active" data-effect="noise">
+                                    <i class="fas fa-wave-square"></i> 噪声图
+                                </button>
+                                <button class="effect-btn" data-effect="terrain">
+                                    <i class="fas fa-mountain"></i> 地形
+                                </button>
+                                <button class="effect-btn" data-effect="flow">
+                                    <i class="fas fa-stream"></i> 流场
+                                </button>
+                            </div>
+                            
+                            <div class="preview-canvas">
+                                <canvas id="paramPreviewCanvas"></canvas>
+                            </div>
+
+                        </div>
+                    </div>
+                    
+                    <!-- 参考按钮 -->
+                    <button class="reference-btn" onclick="window.open('reference/noise.html', '_blank')" title="查看参考效果">
+                        <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- 页面控制按钮 -->
+            <div class="page-controls">
+                <button class="page-btn" id="prev-page-4" onclick="navigatePage(4, -1)">
+                    <i class="fas fa-chevron-up"></i>
+                </button>
+                <button class="page-btn" id="next-page-4" onclick="navigatePage(4, 1)">
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </div>
+        </section>
+
+        <!-- 模块5：对比分析 -->
+        <section class="module" id="module-5" data-module-id="5">
+            <div class="module-header">
+                <h2><i class="fas fa-balance-scale"></i> 第五部分：对比分析</h2>
+                <div class="module-description">
+                    <p>深入对比不同噪声算法的特点与应用场景</p>
+                </div>
+            </div>
+            
+            <!-- 右侧页面导航 -->
+            <nav class="page-nav" id="page-nav-5">
+                <div class="page-nav-items">
+                    <button class="page-nav-btn active" data-page="1" title="噪声算法分类"></button>
+                    <button class="page-nav-btn" data-page="2" title="柏林噪声 vs 白噪声"></button>
+                    <button class="page-nav-btn" data-page="3" title="柏林噪声 vs Simplex噪声"></button>
+                    <button class="page-nav-btn" data-page="4" title="应用场景对比"></button>
+                </div>
+                <div class="page-nav-info">
+                    <span class="page-current">1</span> / <span class="page-total">4</span>
+                </div>
+            </nav>
+            
+            <div class="module-content">
+                <!-- 第1页：噪声算法分类 -->
+                <div class="page active" data-page="1">
+                    <div class="comparison-layout">
+                        <h3><i class="fas fa-th-large"></i> 噪声算法分类</h3>
+                        <div class="noise-types-grid">
+                            <div class="noise-type-card">
+                                <div class="noise-type-icon">
+                                    <i class="fas fa-random"></i>
+                                </div>
+                                <div class="noise-type-content">
+                                    <h4>白噪声</h4>
+                                    <p>完全随机，无相关性</p>
+                                    <div class="noise-type-properties">
+                                        <span class="property-item">连续性：低</span>
+                                        <span class="property-item">自然度：低</span>
+                                        <span class="property-item">计算速度：快</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="noise-type-card">
+                                <div class="noise-type-icon">
+                                    <i class="fas fa-wave-square"></i>
+                                </div>
+                                <div class="noise-type-content">
+                                    <h4>柏林噪声</h4>
+                                    <p>伪随机，连续平滑</p>
+                                    <div class="noise-type-properties">
+                                        <span class="property-item">连续性：高</span>
+                                        <span class="property-item">自然度：高</span>
+                                        <span class="property-item">计算速度：中等</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="noise-type-card">
+                                <div class="noise-type-icon">
+                                    <i class="fas fa-cube"></i>
+                                </div>
+                                <div class="noise-type-content">
+                                    <h4>Simplex噪声</h4>
+                                    <p>柏林噪声的改进版本</p>
+                                    <div class="noise-type-properties">
+                                        <span class="property-item">连续性：高</span>
+                                        <span class="property-item">自然度：高</span>
+                                        <span class="property-item">计算速度：快</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="noise-type-card">
+                                <div class="noise-type-icon">
+                                    <i class="fas fa-layer-group"></i>
+                                </div>
+                                <div class="noise-type-content">
+                                    <h4>分形噪声</h4>
+                                    <p>多层噪声叠加</p>
+                                    <div class="noise-type-properties">
+                                        <span class="property-item">连续性：高</span>
+                                        <span class="property-item">自然度：高</span>
+                                        <span class="property-item">计算速度：慢</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="visualization-container">
+                            <div class="viz-header">
+                                <h4>噪声类型对比可视化</h4>
+                            </div>
+                            <div class="viz-canvas">
+                                <canvas id="noiseTypesCanvas" width="600" height="200"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第2页：柏林噪声 vs 白噪声 -->
+                <div class="page" data-page="2">
+                    <div class="comparison-layout">
+                        <h3><i class="fas fa-exchange-alt"></i> 柏林噪声 vs 白噪声</h3>
+                        <div class="comparison-grid">
+                            <div class="comparison-item">
+                                <div class="comparison-header">
+                                    <h4>白噪声</h4>
+                                    <div class="comparison-icon">
+                                        <i class="fas fa-random"></i>
+                                    </div>
+                                </div>
+                                <div class="comparison-content">
+                                    <div class="comparison-canvas">
+                                        <canvas id="whiteNoiseCompare" width="300" height="200"></canvas>
+                                    </div>
+                                    <div class="comparison-properties">
+                                        <h5>特点</h5>
+                                        <ul>
+                                            <li>完全随机，每个点独立</li>
+                                            <li>缺乏连续性</li>
+                                            <li>像素化外观</li>
+                                            <li>计算简单快速</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="comparison-item">
+                                <div class="comparison-header">
+                                    <h4>柏林噪声</h4>
+                                    <div class="comparison-icon">
+                                        <i class="fas fa-wave-square"></i>
+                                    </div>
+                                </div>
+                                <div class="comparison-content">
+                                    <div class="comparison-canvas">
+                                        <canvas id="perlinNoiseCompare" width="300" height="200"></canvas>
+                                    </div>
+                                    <div class="comparison-properties">
+                                        <h5>特点</h5>
+                                        <ul>
+                                            <li>伪随机，连续平滑</li>
+                                            <li>自然真实的外观</li>
+                                            <li>可控性强</li>
+                                            <li>计算复杂度中等</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第3页：柏林噪声 vs Simplex噪声 -->
+                <div class="page" data-page="3">
+                    <div class="comparison-layout">
+                        <h3><i class="fas fa-exchange-alt"></i> 柏林噪声 vs Simplex噪声</h3>
+                        <div class="comparison-grid">
+                            <div class="comparison-item">
+                                <div class="comparison-header">
+                                    <h4>柏林噪声</h4>
+                                    <div class="comparison-icon">
+                                        <i class="fas fa-wave-square"></i>
+                                    </div>
+                                </div>
+                                <div class="comparison-content">
+                                    <div class="comparison-canvas">
+                                        <canvas id="perlinNoiseSimplexCompare" width="300" height="200"></canvas>
+                                    </div>
+                                    <div class="comparison-properties">
+                                        <h5>特点</h5>
+                                        <ul>
+                                            <li>1983年发明</li>
+                                            <li>网格-based算法</li>
+                                            <li>高维性能较差</li>
+                                            <li>有方向性伪影</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="comparison-item">
+                                <div class="comparison-header">
+                                    <h4>Simplex噪声</h4>
+                                    <div class="comparison-icon">
+                                        <i class="fas fa-cube"></i>
+                                    </div>
+                                </div>
+                                <div class="comparison-content">
+                                    <div class="comparison-canvas">
+                                        <canvas id="simplexNoiseCompare" width="300" height="200"></canvas>
+                                    </div>
+                                    <div class="comparison-properties">
+                                        <h5>特点</h5>
+                                        <ul>
+                                            <li>2002年改进</li>
+                                            <li>单纯形-based算法</li>
+                                            <li>高维性能优秀</li>
+                                            <li>无方向性伪影</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第4页：应用场景对比 -->
+                <div class="page" data-page="4">
+                    <div class="comparison-layout">
+                        <h3><i class="fas fa-sitemap"></i> 应用场景对比</h3>
+                        <div class="application-scenarios">
+                            <div class="scenario-card">
+                                <div class="scenario-icon">
+                                    <i class="fas fa-gamepad"></i>
+                                </div>
+                                <div class="scenario-content">
+                                    <h4>游戏开发</h4>
+                                    <p>地形生成、 procedural内容</p>
+                                    <div class="scenario-algorithms">
+                                        <span class="algorithm-tag recommended">柏林噪声</span>
+                                        <span class="algorithm-tag">Simplex噪声</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="scenario-card">
+                                <div class="scenario-icon">
+                                    <i class="fas fa-film"></i>
+                                </div>
+                                <div class="scenario-content">
+                                    <h4>电影特效</h4>
+                                    <p>烟雾、火焰、云等自然现象</p>
+                                    <div class="scenario-algorithms">
+                                        <span class="algorithm-tag recommended">Simplex噪声</span>
+                                        <span class="algorithm-tag">柏林噪声</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="scenario-card">
+                                <div class="scenario-icon">
+                                    <i class="fas fa-paint-brush"></i>
+                                </div>
+                                <div class="scenario-content">
+                                    <h4>图形设计</h4>
+                                    <p>纹理生成、艺术效果</p>
+                                    <div class="scenario-algorithms">
+                                        <span class="algorithm-tag recommended">柏林噪声</span>
+                                        <span class="algorithm-tag">分形噪声</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="scenario-card">
+                                <div class="scenario-icon">
+                                    <i class="fas fa-music"></i>
+                                </div>
+                                <div class="scenario-content">
+                                    <h4>音频合成</h4>
+                                    <p>自然音效、背景音乐</p>
+                                    <div class="scenario-algorithms">
+                                        <span class="algorithm-tag recommended">白噪声</span>
+                                        <span class="algorithm-tag">柏林噪声</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="visualization-container">
+                            <div class="viz-header">
+                                <h4>应用场景可视化</h4>
+                            </div>
+                            <div class="viz-canvas">
+                                <canvas id="applicationScenariosCanvas" width="600" height="300"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 页面控制按钮 -->
+            <div class="page-controls">
+                <button class="page-btn" id="prev-page-5" onclick="navigatePage(5, -1)">
+                    <i class="fas fa-chevron-up"></i>
+                </button>
+                <button class="page-btn" id="next-page-5" onclick="navigatePage(5, 1)">
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </div>
+        </section>
+
+        <section class="module" id="module-6" data-module-id="6">
+            <div class="module-header">
+                <h2><i class="fas fa-code"></i> 第六部分：代码实现</h2>
+                <div class="module-description">
+                    <p>不同编程语言的柏林噪声实现代码与解析</p>
+                </div>
+            </div>
+            
+            <!-- 右侧页面导航 -->
+            <nav class="page-nav" id="page-nav-6">
+                <div class="page-nav-items">
+                    <button class="page-nav-btn active" data-page="1" title="模块介绍"></button>
+                    <button class="page-nav-btn" data-page="2" title="代码实现"></button>
+                    <button class="page-nav-btn" data-page="3" title="代码解析"></button>
+                    <button class="page-nav-btn" data-page="4" title="应用案例"></button>
+                </div>
+                <div class="page-nav-info">
+                    <span class="page-current">1</span> / <span class="page-total">4</span>
+                </div>
+            </nav>
+            
+            <div class="module-content">
+                <!-- 第1页：模块介绍和核心概念 -->
+                <div class="page active" data-page="1">
+                    <div class="content-section">
+                        <h3>📝 代码实现模块介绍</h3>
+                        <div class="insight-box">
+                            <div class="insight-icon">
+                                <i class="fas fa-lightbulb"></i>
+                            </div>
+                            <div class="insight-content">
+                                <h4>学习目标</h4>
+                                <p>通过不同编程语言的实现，深入理解柏林噪声算法的核心原理和实现细节。</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="content-section">
+                        <h3>🎯 核心概念回顾</h3>
+                        <div class="algorithm-steps">
+                            <div class="step-item">
+                                <div class="step-number">1</div>
+                                <div class="step-content">
+                                    <h4>网格划分</h4>
+                                    <p>将空间划分为规则网格，每个顶点有固定坐标。</p>
+                                </div>
+                            </div>
+                            <div class="step-item">
+                                <div class="step-number">2</div>
+                                <div class="step-content">
+                                    <h4>梯度向量</h4>
+                                    <p>为每个网格顶点分配随机梯度向量。</p>
+                                </div>
+                            </div>
+                            <div class="step-item">
+                                <div class="step-number">3</div>
+                                <div class="step-content">
+                                    <h4>点乘运算</h4>
+                                    <p>计算梯度向量与距离向量的点乘。</p>
+                                </div>
+                            </div>
+                            <div class="step-item">
+                                <div class="step-number">4</div>
+                                <div class="step-content">
+                                    <h4>平滑插值</h4>
+                                    <p>使用5阶多项式进行平滑插值，获得最终噪声值。</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第2页：代码实现展示 -->
+                <div class="page" data-page="2">
+                    <div class="content-section">
+                        <h3>💻 代码实现展示</h3>
+                        <p>选择不同语言查看柏林噪声的实现代码：</p>
+                    </div>
+                    
+                    <div class="code-block">
+                        <div class="language-switcher">
+                            <div class="language-option active" data-lang="java">Java</div>
+                            <div class="language-option" data-lang="python">Python</div>
+                            <div class="language-option" data-lang="cpp">C++</div>
+                            <div class="language-slider"></div>
+                        </div>
+                        <pre id="code-content">// Java 实现的柏林噪声算法
+public class PerlinNoise {
+    private int[] permutation;
+    private int[] p;
+    
+    public PerlinNoise() {
+        // 初始化置换表
+        permutation = new int[256];
+        for (int i = 0; i < 256; i++) {
+            permutation[i] = i;
+        }
+        // 打乱置换表
+        for (int i = 255; i > 0; i--) {
+            int j = (int)(Math.random() * (i + 1));
+            int temp = permutation[i];
+            permutation[i] = permutation[j];
+            permutation[j] = temp;
+        }
+        // 扩展置换表
+        p = new int[512];
+        for (int i = 0; i < 512; i++) {
+            p[i] = permutation[i & 255];
+        }
+    }
+    
+    private double fade(double t) {
+        return t * t * t * (t * (t * 6 - 15) + 10);
+    }
+    
+    private double lerp(double t, double a, double b) {
+        return a + t * (b - a);
+    }
+    
+    private double grad(int hash, double x, double y, double z) {
+        int h = hash & 15;
+        double u = h < 8 ? x : y;
+        double v = h < 4 ? y : h == 12 || h == 14 ? x : z;
+        return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+    }
+    
+    public double noise(double x, double y, double z) {
+        int X = (int)Math.floor(x) & 255;
+        int Y = (int)Math.floor(y) & 255;
+        int Z = (int)Math.floor(z) & 255;
+        
+        x -= Math.floor(x);
+        y -= Math.floor(y);
+        z -= Math.floor(z);
+        
+        double u = fade(x);
+        double v = fade(y);
+        double w = fade(z);
+        
+        int A = p[X] + Y;
+        int AA = p[A] + Z;
+        int AB = p[A + 1] + Z;
+        int B = p[X + 1] + Y;
+        int BA = p[B] + Z;
+        int BB = p[B + 1] + Z;
+        
+        return lerp(w, lerp(v, lerp(u, grad(p[AA], x, y, z),
+                               grad(p[BA], x-1, y, z)),
+                       lerp(u, grad(p[AB], x, y-1, z),
+                               grad(p[BB], x-1, y-1, z))),
+               lerp(v, lerp(u, grad(p[AA+1], x, y, z-1),
+                               grad(p[BA+1], x-1, y, z-1)),
+                       lerp(u, grad(p[AB+1], x, y-1, z-1),
+                               grad(p[BB+1], x-1, y-1, z-1)));
+    }
+}</pre>
+                    </div>
+                </div>
+
+                <!-- 第3页：代码解析和运行测试 -->
+                <div class="page" data-page="3">
+                    <div class="content-section">
+                        <h3>🧩 代码解析</h3>
+                        <div class="insight-box">
+                            <div class="insight-icon">
+                                <i class="fas fa-code"></i>
+                            </div>
+                            <div class="insight-content">
+                                <h4>核心函数解析</h4>
+                                <ul>
+                                    <li><strong>fade(t)</strong>：平滑函数，确保插值的连续性</li>
+                                    <li><strong>lerp(t, a, b)</strong>：线性插值函数</li>
+                                    <li><strong>grad(hash, x, y, z)</strong>：根据哈希值计算梯度贡献</li>
+                                    <li><strong>noise(x, y, z)</strong>：主噪声计算函数</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="content-section">
+                        <h3>🧪 运行测试</h3>
+                        <p>可以通过以下步骤测试柏林噪声实现：</p>
+                        <div class="algorithm-steps">
+                            <div class="step-item">
+                                <div class="step-number">1</div>
+                                <div class="step-content">
+                                    <h4>创建噪声实例</h4>
+                                    <p>实例化PerlinNoise类</p>
+                                </div>
+                            </div>
+                            <div class="step-item">
+                                <div class="step-number">2</div>
+                                <div class="step-content">
+                                    <h4>调用noise方法</h4>
+                                    <p>传入坐标参数获取噪声值</p>
+                                </div>
+                            </div>
+                            <div class="step-item">
+                                <div class="step-number">3</div>
+                                <div class="step-content">
+                                    <h4>可视化结果</h4>
+                                    <p>将噪声值映射到颜色或高度</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 第4页：应用案例和扩展 -->
+                <div class="page" data-page="4">
+                    <div class="content-section">
+                        <h3>🚀 应用案例</h3>
+                        <div class="scenario-grid">
+                            <div class="scenario-card">
+                                <div class="scenario-icon">
+                                    <i class="fas fa-gamepad"></i>
+                                </div>
+                                <div class="scenario-content">
+                                    <h4>游戏开发</h4>
+                                    <p>地形生成、 procedural内容</p>
+                                </div>
+                            </div>
+                            <div class="scenario-card">
+                                <div class="scenario-icon">
+                                    <i class="fas fa-film"></i>
+                                </div>
+                                <div class="scenario-content">
+                                    <h4>电影特效</h4>
+                                    <p>烟雾、火焰、云等自然现象</p>
+                                </div>
+                            </div>
+                            <div class="scenario-card">
+                                <div class="scenario-icon">
+                                    <i class="fas fa-paint-brush"></i>
+                                </div>
+                                <div class="scenario-content">
+                                    <h4>图形设计</h4>
+                                    <p>纹理生成、艺术效果</p>
+                                </div>
+                            </div>
+                            <div class="scenario-card">
+                                <div class="scenario-icon">
+                                    <i class="fas fa-music"></i>
+                                </div>
+                                <div class="scenario-content">
+                                    <h4>音频合成</h4>
+                                    <p>自然音效、背景音乐</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="content-section">
+                        <div class="insight-box">
+                            <div class="insight-icon">
+                                <i class="fas fa-cogs"></i>
+                            </div>
+                            <div class="insight-content">
+                                <h4>🔄 扩展与优化</h4>
+                                <ul>
+                                    <li>使用查找表预计算梯度</li>
+                                    <li>实现分形噪声（多层叠加）</li>
+                                    <li>考虑使用Simplex噪声提高高维性能</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 页面控制按钮 -->
+            <div class="page-controls">
+                <button class="page-btn" id="prev-page-6" onclick="navigatePage(6, -1)">
+                    <i class="fas fa-chevron-up"></i>
+                </button>
+                <button class="page-btn" id="next-page-6" onclick="navigatePage(6, 1)">
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </div>
+        </section>
+
+        <section class="module" id="module-7" data-module-id="7">
+            <div class="module-header">
+                <h2><i class="fas fa-flag-checkered"></i> 第七部分：总结与扩展</h2>
+                <div class="module-description">
+                    <p>回顾核心概念，探索进一步学习的方向</p>
+                </div>
+            </div>
+            
+            <div class="module-content">
+                <div class="coming-soon">
+                    <i class="fas fa-graduation-cap"></i>
+                    <h3>总结模块</h3>
+                    <p>该模块包含核心概念总结和扩展学习资源</p>
+                    <div class="feature-list">
+                        <span><i class="fas fa-check"></i> 核心思想回顾</span>
+                        <span><i class="fas fa-check"></i> 算法对比分析</span>
+                        <span><i class="fas fa-check"></i> 学习资源推荐</span>
+                        <span><i class="fas fa-check"></i> 实践练习建议</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 帮助模态框 -->
+    <div class="modal" id="helpModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>使用帮助</h3>
+                <button class="modal-close" onclick="closeModal('helpModal')">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="help-section">
+                    <h4>导航控制</h4>
+                    <ul>
+                        <li><strong>鼠标点击：</strong> 点击顶部导航按钮切换模块</li>
+                        <li><strong>键盘操作：</strong> 使用 ← → 方向键切换模块</li>
+                        <li><strong>进度控制：</strong> 查看顶部进度条了解当前位置</li>
+                    </ul>
+                </div>
+                <div class="help-section">
+                    <h4>交互功能</h4>
+                    <ul>
+                        <li><strong>参数调节：</strong> 拖动滑块实时查看效果变化</li>
+                        <li><strong>重新生成：</strong> 点击按钮生成新的随机数据</li>
+                        <li><strong>动画演示：</strong> 部分可视化支持动画播放</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript脚本 -->
+    <script src="js/utils.js"></script>
+    <script src="js/perlin-noise.js"></script>
+    <script src="js/visualizations.js"></script>
+    <script src="js/navigation.js"></script>
+    <script src="js/noise-calculation.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
