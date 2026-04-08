@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>柏林噪声 · Perlin Noise</title>
+  <style>
+    :root {
+      --bg: #0d0d1a;
+      --panel: #13131f;
+      --accent: #7c6bff;
+      --accent2: #00d4ff;
+      --text: #e8e8f0;
+      --muted: #6b6b8a;
+      --border: #2a2a40;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 32px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(13,13,26,.85);
+      backdrop-filter: blur(8px);
+      position: sticky; top: 0; z-index: 100;
+    }
+    .logo { font-size: 1.3rem; font-weight: 700; letter-spacing: .05em; }
+    .logo span { color: var(--accent); }
+    .badge {
+      font-size: .75rem; background: var(--accent); color: #fff;
+      padding: 3px 10px; border-radius: 20px; letter-spacing: .06em;
+    }
+    nav { display: flex; gap: 8px; }
+    nav button {
+      background: var(--panel); border: 1px solid var(--border);
+      color: var(--text); padding: 6px 16px; border-radius: 8px;
+      cursor: pointer; font-size: .85rem; transition: .2s;
+    }
+    nav button.active, nav button:hover { background: var(--accent); border-color: var(--accent); }
+
+    /* ── Main layout ── */
+    .container { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100vh - 65px); }
+
+    /* ── Sidebar ── */
+    aside {
+      background: var(--panel); border-right: 1px solid var(--border);
+      padding: 24px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px;
+    }
+    .section-title {
+      font-size: .7rem; text-transform: uppercase; letter-spacing: .12em;
+      color: var(--muted); margin-bottom: 10px;
+    }
+    .ctrl { display: flex; flex-direction: column; gap: 6px; }
+    .ctrl label { font-size: .82rem; display: flex; justify-content: space-between; }
+    .ctrl label span { color: var(--accent2); font-weight: 600; }
+    input[type=range] {
+      -webkit-appearance: none; width: 100%; height: 4px;
+      background: var(--border); border-radius: 2px; outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px;
+      border-radius: 50%; background: var(--accent); cursor: pointer;
+      box-shadow: 0 0 6px rgba(124,107,255,.6);
+    }
+    .color-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .color-btn {
+      width: 28px; height: 28px; border-radius: 6px; cursor: pointer;
+      border: 2px solid transparent; transition: .2s;
+    }
+    .color-btn.active { border-color: #fff; transform: scale(1.15); }
+    .toggle-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .toggle-btn {
+      flex: 1; min-width: 80px; background: var(--border); border: 1px solid var(--border);
+      color: var(--text); padding: 7px 6px; border-radius: 8px;
+      cursor: pointer; font-size: .8rem; text-align: center; transition: .2s;
+    }
+    .toggle-btn.active { background: var(--accent); border-color: var(--accent); }
+    .action-btn {
+      width: 100%; padding: 10px; border-radius: 10px; border: none;
+      font-size: .9rem; font-weight: 600; cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff; transition: opacity .2s;
+    }
+    .action-btn:hover { opacity: .85; }
+    .divider { height: 1px; background: var(--border); }
+
+    /* ── Canvas area ── */
+    main {
+      position: relative; overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    #mainCanvas {
+      display: block; width: 100%; height: 100%;
+      cursor: crosshair;
+    }
+    /* Overlay HUD */
+    .hud {
+      position: absolute; bottom: 16px; left: 16px;
+      background: rgba(13,13,26,.75); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 14px;
+      font-size: .78rem; color: var(--muted);
+      backdrop-filter: blur(6px);
+      pointer-events: none;
+    }
+    .hud span { color: var(--text); }
+
+    /* ── Info panel (below canvas) hidden by default — actually we'll do tabs ── */
+    /* ── Mode-specific overlay message ── */
+    .mode-label {
+      position: absolute; top: 14px; right: 14px;
+      background: rgba(124,107,255,.25); border: 1px solid var(--accent);
+      color: var(--accent); border-radius: 20px; padding: 4px 14px;
+      font-size: .78rem; pointer-events: none; backdrop-filter: blur(4px);
+    }
+
+    /* ── About section visible below on scroll (hidden in canvas view) ── */
+    /* We'll embed it as a tab */
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Perlin <span>Noise</span> Lab</div>
+  <nav>
+    <button class="active" id="tab-2d" onclick="switchMode('2d')">2D 纹理</button>
+    <button id="tab-flow" onclick="switchMode('flow')">流场</button>
+    <button id="tab-terrain" onclick="switchMode('terrain')">地形</button>
+    <button id="tab-about" onclick="switchMode('about')">关于</button>
+  </nav>
+  <div class="badge">INTERACTIVE</div>
+</header>
+
+<div class="container">
+  <!-- ── Sidebar ── -->
+  <aside>
+    <div>
+      <div class="section-title">噪声参数</div>
+      <div class="ctrl">
+        <label>缩放 Scale <span id="scaleVal">0.004</span></label>
+        <input type="range" id="scaleSlider" min="1" max="50" value="15" oninput="updateParam('scale',this)">
+      </div>
+    </div>
+    <div class="ctrl">
+      <label>叠加层数 Octaves <span id="octavesVal">4</span></label>
+      <input type="range" id="octavesSlider" min="1" max="8" value="4" oninput="updateParam('octaves',this)">
+    </div>
+    <div class="ctrl">
+      <label>持续度 Persistence <span id="persistenceVal">0.50</span></label>
+      <input type="range" id="persistenceSlider" min="10" max="90" value="50" oninput="updateParam('persistence',this)">
+    </div>
+    <div class="ctrl">
+      <label>空隙度 Lacunarity <span id="lacunarityVal">2.00</span></label>
+      <input type="range" id="lacunaritySlider" min="10" max="40" value="20" oninput="updateParam('lacunarity',this)">
+    </div>
+    <div class="ctrl">
+      <label>动画速度 <span id="speedVal">0.5</span></label>
+      <input type="range" id="speedSlider" min="0" max="100" value="20" oninput="updateParam('speed',this)">
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="section-title">颜色方案</div>
+      <div class="color-row" id="paletteRow">
+        <div class="color-btn active" style="background:linear-gradient(135deg,#0d0d1a,#7c6bff,#00d4ff)" data-palette="cosmic" onclick="setPalette(this,'cosmic')"></div>
+        <div class="color-btn" style="background:linear-gradient(135deg,#1a3a1a,#2ecc40,#aaff80)" data-palette="forest" onclick="setPalette(this,'forest')"></div>
+        <div class="color-btn" style="background:linear-gradient(135deg,#0a1628,#1e5fa0,#7fd6ff)" data-palette="ocean" onclick="setPalette(this,'ocean')"></div>
+        <div class="color-btn" style="background:linear-gradient(135deg,#1a0a00,#c0500a,#ffd280)" data-palette="lava" onclick="setPalette(this,'lava')"></div>
+        <div class="color-btn" style="background:linear-gradient(135deg,#111,#aaa,#fff)" data-palette="mono" onclick="setPalette(this,'mono')"></div>
+        <div class="color-btn" style="background:linear-gradient(135deg,#2d0033,#e000c0,#ffb3f6)" data-palette="neon" onclick="setPalette(this,'neon')"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-title">流场选项</div>
+      <div class="toggle-row">
+        <div class="toggle-btn active" id="btn-particles" onclick="toggleOpt('particles')">粒子</div>
+        <div class="toggle-btn" id="btn-arrows" onclick="toggleOpt('arrows')">箭头</div>
+        <div class="toggle-btn active" id="btn-fade" onclick="toggleOpt('fade')">拖尾</div>
+      </div>
+    </div>
+
+    <div class="ctrl">
+      <label>粒子数量 <span id="particleCountVal">800</span></label>
+      <input type="range" id="particleCountSlider" min="100" max="3000" value="800" oninput="updateParam('particleCount',this)">
+    </div>
+
+    <div class="divider"></div>
+
+    <button class="action-btn" onclick="randomizeSeed()">🎲 随机种子</button>
+    <button class="action-btn" style="background:linear-gradient(135deg,#1e5fa0,#00d4ff);margin-top:4px" onclick="saveImage()">💾 保存图片</button>
+  </aside>
+
+  <!-- ── Canvas ── -->
+  <main>
+    <canvas id="mainCanvas"></canvas>
+    <canvas id="aboutCanvas" style="display:none;width:100%;height:100%"></canvas>
+    <div class="mode-label" id="modeLabel">2D 纹理模式</div>
+    <div class="hud" id="hud">
+      模式: <span id="hudMode">2D Texture</span> &nbsp;|&nbsp;
+      FPS: <span id="hudFps">--</span> &nbsp;|&nbsp;
+      鼠标: <span id="hudMouse">--,--</span>
+    </div>
+  </main>
+</div>
+
+<!-- About Panel (hidden div) -->
+<div id="aboutPanel" style="display:none;position:fixed;inset:65px 0 0 280px;overflow-y:auto;padding:40px 60px;background:var(--bg);z-index:10;">
+  <h2 style="font-size:2rem;margin-bottom:16px">什么是 <span style="color:var(--accent)">柏林噪声</span>？</h2>
+  <p style="color:#bbb;line-height:1.8;max-width:700px;margin-bottom:24px">
+    柏林噪声（Perlin Noise）由 <strong>Ken Perlin</strong> 于 1983 年为电影《Tron》开发，
+    并于 1985 年在 SIGGRAPH 上正式发表。它是一种<strong>梯度噪声</strong>算法，能生成具有
+    <em>自然感</em>的随机纹理，广泛用于计算机图形学、游戏开发、自然场景模拟等领域。
+  </p>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;max-width:900px">
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px">
+      <div style="font-size:1.6rem;margin-bottom:8px">🌊</div>
+      <h3 style="margin-bottom:8px;color:var(--accent2)">连续平滑</h3>
+      <p style="color:#aaa;font-size:.88rem;line-height:1.7">不同于白噪声，柏林噪声相邻采样点之间平滑过渡，产生自然流动感。</p>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px">
+      <div style="font-size:1.6rem;margin-bottom:8px">🏔️</div>
+      <h3 style="margin-bottom:8px;color:var(--accent2)">分形叠加</h3>
+      <p style="color:#aaa;font-size:.88rem;line-height:1.7">通过叠加多个不同频率/振幅的噪声层（Octaves），生成复杂的分形地形。</p>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px">
+      <div style="font-size:1.6rem;margin-bottom:8px">🎮</div>
+      <h3 style="margin-bottom:8px;color:var(--accent2)">程序生成</h3>
+      <p style="color:#aaa;font-size:.88rem;line-height:1.7">Minecraft、No Man's Sky 等游戏用它生成无限世界。同一种子产生相同结果，可重现。</p>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px">
+      <div style="font-size:1.6rem;margin-bottom:8px">🎬</div>
+      <h3 style="margin-bottom:8px;color:var(--accent2)">影视特效</h3>
+      <p style="color:#aaa;font-size:.88rem;line-height:1.7">火焰、烟雾、云彩、海浪的实时渲染，柏林噪声是标准工具之一。</p>
+    </div>
+  </div>
+
+  <h3 style="margin:36px 0 14px;font-size:1.2rem">核心公式</h3>
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:600px;font-family:monospace;font-size:.9rem;color:var(--accent2);line-height:2">
+    fbm(x,y) = Σ<sub>i=0</sub><sup>octaves</sup>  amplitude<sub>i</sub> × noise(x × freq<sub>i</sub>, y × freq<sub>i</sub>)<br>
+    freq<sub>i</sub> = lacunarity<sup>i</sup><br>
+    amplitude<sub>i</sub> = persistence<sup>i</sup>
+  </div>
+
+  <h3 style="margin:36px 0 14px;font-size:1.2rem">使用指南</h3>
+  <ul style="color:#bbb;line-height:2.2;max-width:600px;padding-left:20px;font-size:.9rem">
+    <li><strong style="color:var(--text)">2D 纹理</strong> — 实时渲染分形噪声贴图，支持动画时间轴</li>
+    <li><strong style="color:var(--text)">流场</strong> — 用噪声角度驱动粒子，呈现流体涌动</li>
+    <li><strong style="color:var(--text)">地形</strong> — 3D 等高线地图，通过高度着色区分地貌</li>
+    <li><strong style="color:var(--text)">随机种子</strong> — 每次生成不同的无限随机世界</li>
+    <li><strong style="color:var(--text)">保存图片</strong> — 将当前帧下载为 PNG</li>
+  </ul>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════
+//  Improved Perlin Noise (Ken Perlin's classic)
+// ═══════════════════════════════════════════════════
+class PerlinNoise {
+  constructor(seed = 0) { this.reseed(seed); }
+  reseed(seed) {
+    this.perm = new Uint8Array(512);
+    const p = Array.from({length:256},(_,i)=>i);
+    // shuffle with seed
+    let s = (seed | 0) || 1;
+    for (let i = 255; i > 0; i--) {
+      s = (s * 1664525 + 1013904223) & 0xffffffff;
+      const j = ((s >>> 0) % (i + 1));
+      [p[i], p[j]] = [p[j], p[i]];
+    }
+    for (let i = 0; i < 512; i++) this.perm[i] = p[i & 255];
+  }
+  fade(t) { return t*t*t*(t*(t*6-15)+10); }
+  lerp(a,b,t) { return a + t*(b-a); }
+  grad(hash, x, y, z) {
+    const h = hash & 15;
+    const u = h < 8 ? x : y;
+    const v = h < 4 ? y : (h===12||h===14 ? x : z);
+    return ((h&1)?-u:u) + ((h&2)?-v:v);
+  }
+  noise(x, y, z=0) {
+    const X=(Math.floor(x)&255), Y=(Math.floor(y)&255), Z=(Math.floor(z)&255);
+    x-=Math.floor(x); y-=Math.floor(y); z-=Math.floor(z);
+    const u=this.fade(x), v=this.fade(y), w=this.fade(z);
+    const p=this.perm;
+    const A=p[X]+Y, AA=p[A]+Z, AB=p[A+1]+Z;
+    const B=p[X+1]+Y, BA=p[B]+Z, BB=p[B+1]+Z;
+    return this.lerp(
+      this.lerp(
+        this.lerp(this.grad(p[AA],x,y,z), this.grad(p[BA],x-1,y,z),u),
+        this.lerp(this.grad(p[AB],x,y-1,z), this.grad(p[BB],x-1,y-1,z),u), v),
+      this.lerp(
+        this.lerp(this.grad(p[AA+1],x,y,z-1), this.grad(p[BA+1],x-1,y,z-1),u),
+        this.lerp(this.grad(p[AB+1],x,y-1,z-1), this.grad(p[BB+1],x-1,y-1,z-1),u), v), w);
+  }
+  // Fractional Brownian Motion
+  fbm(x, y, z=0, octaves=4, persistence=.5, lacunarity=2) {
+    let val=0, amp=1, freq=1, max=0;
+    for (let i=0;i<octaves;i++) {
+      val += this.noise(x*freq, y*freq, z*freq) * amp;
+      max += amp; amp *= persistence; freq *= lacunarity;
+    }
+    return val / max;
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  Palette definitions
+// ═══════════════════════════════════════════════════
+const PALETTES = {
+  cosmic: [[13,13,26],[40,20,80],[100,60,200],[124,107,255],[0,212,255],[255,255,255]],
+  forest: [[10,30,10],[20,70,20],[40,130,40],[80,200,80],[160,240,100],[230,255,200]],
+  ocean:  [[5,10,30],[10,30,80],[20,80,160],[30,140,220],[100,200,255],[220,245,255]],
+  lava:   [[10,5,0],[60,10,0],[160,40,0],[220,100,10],[255,200,60],[255,255,200]],
+  mono:   [[0,0,0],[30,30,30],[80,80,80],[150,150,150],[210,210,210],[255,255,255]],
+  neon:   [[20,0,30],[80,0,120],[180,0,200],[255,50,255],[255,180,255],[255,240,255]],
+};
+function samplePalette(palette, t) {
+  const colors = PALETTES[palette];
+  const n = colors.length - 1;
+  const i = Math.min(Math.floor(t * n), n - 1);
+  const f = t * n - i;
+  const c0 = colors[i], c1 = colors[i+1];
+  return [
+    Math.round(c0[0]+(c1[0]-c0[0])*f),
+    Math.round(c0[1]+(c1[1]-c0[1])*f),
+    Math.round(c0[2]+(c1[2]-c0[2])*f),
+  ];
+}
+
+// ═══════════════════════════════════════════════════
+//  State
+// ═══════════════════════════════════════════════════
+const pn = new PerlinNoise(42);
+let currentMode = '2d';
+let animT = 0;
+let lastTime = 0, fps = 0, fpsFrames = 0, fpsTimer = 0;
+let mouseX = 0, mouseY = 0;
+
+const params = {
+  scale: 0.004,
+  octaves: 4,
+  persistence: 0.50,
+  lacunarity: 2.0,
+  speed: 0.5,
+  particleCount: 800,
+  palette: 'cosmic',
+  showParticles: true,
+  showArrows: false,
+  showFade: true,
+};
+
+// ── Terrain colormap ──
+function terrainColor(h) {
+  if (h < -0.3) return [10,30,80]; // deep ocean
+  if (h < -0.05) return [20,80,160]; // ocean
+  if (h < 0.02) return [200,190,140]; // beach
+  if (h < 0.2)  return [60,160,60]; // lowland
+  if (h < 0.45) return [100,130,60]; // highland
+  if (h < 0.65) return [130,100,80]; // mountain
+  return [240,240,255]; // snow
+}
+
+// ═══════════════════════════════════════════════════
+//  Canvas setup
+// ═══════════════════════════════════════════════════
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  const main = canvas.parentElement;
+  canvas.width  = main.clientWidth;
+  canvas.height = main.clientHeight;
+  // reinitialise particles on resize
+  if (particles.length) initParticles();
+}
+window.addEventListener('resize', () => { resize(); });
+
+// ═══════════════════════════════════════════════════
+//  Particles (for flow field)
+// ═══════════════════════════════════════════════════
+let particles = [];
+function initParticles() {
+  particles = [];
+  for (let i = 0; i < params.particleCount; i++) {
+    particles.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      vx: 0, vy: 0,
+      life: Math.random() * 200,
+      maxLife: 150 + Math.random() * 200,
+      hue: Math.random() * 60,
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  Render modes
+// ═══════════════════════════════════════════════════
+function render2D() {
+  const W = canvas.width, H = canvas.height;
+  const imgData = ctx.createImageData(W, H);
+  const d = imgData.data;
+  const scale = params.scale;
+  const t = animT * params.speed * 0.0005;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const v = pn.fbm(x*scale, y*scale, t, params.octaves, params.persistence, params.lacunarity);
+      const t01 = (v + 1) * 0.5; // map [-1,1] -> [0,1]
+      const [r,g,b] = samplePalette(params.palette, t01);
+      const idx = (y*W + x) * 4;
+      d[idx]=r; d[idx+1]=g; d[idx+2]=b; d[idx+3]=255;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+function renderFlow() {
+  const W = canvas.width, H = canvas.height;
+  const scale = params.scale;
+  const t = animT * params.speed * 0.0005;
+
+  // Fade trail
+  if (params.showFade) {
+    ctx.fillStyle = 'rgba(13,13,26,0.18)';
+    ctx.fillRect(0, 0, W, H);
+  } else {
+    ctx.clearRect(0, 0, W, H);
+    // background
+    ctx.fillStyle = '#0d0d1a';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Arrows
+  if (params.showArrows) {
+    const step = 48;
+    ctx.strokeStyle = 'rgba(124,107,255,0.35)';
+    ctx.lineWidth = 1;
+    for (let y = step/2; y < H; y += step) {
+      for (let x = step/2; x < W; x += step) {
+        const v = pn.noise(x*scale, y*scale, t);
+        const angle = v * Math.PI * 4;
+        const len = 14;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(angle)*len, y + Math.sin(angle)*len);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Particles
+  if (params.showParticles) {
+    for (let p of particles) {
+      const v = pn.noise(p.x*scale, p.y*scale, t);
+      const angle = v * Math.PI * 4;
+      const speed = 2.5;
+      p.vx = Math.cos(angle)*speed;
+      p.vy = Math.sin(angle)*speed;
+      p.x += p.vx; p.y += p.vy;
+      p.life++;
+
+      if (p.life > p.maxLife || p.x < 0 || p.x > W || p.y < 0 || p.y > H) {
+        p.x = Math.random()*W; p.y = Math.random()*H;
+        p.life = 0;
+      }
+
+      const alpha = Math.min(p.life / 30, 1) * (1 - p.life/p.maxLife);
+      const hue = (v + 1) * 180 + 160;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 1.2, 0, Math.PI*2);
+      ctx.fillStyle = `hsla(${hue},90%,70%,${alpha})`;
+      ctx.fill();
+    }
+  }
+}
+
+function renderTerrain() {
+  const W = canvas.width, H = canvas.height;
+  const imgData = ctx.createImageData(W, H);
+  const d = imgData.data;
+  const scale = params.scale;
+  const t = animT * params.speed * 0.00015;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const h = pn.fbm(x*scale, y*scale, t, params.octaves, params.persistence, params.lacunarity);
+      const [r,g,b] = terrainColor(h);
+      const idx = (y*W+x)*4;
+      d[idx]=r; d[idx+1]=g; d[idx+2]=b; d[idx+3]=255;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  // Contour lines
+  // (lightweight: just draw scanline differences)
+  const levels = [-0.3,-0.05,0.02,0.2,0.45,0.65];
+  // We'll skip per-pixel contour for perf, rely on color bands
+}
+
+// ═══════════════════════════════════════════════════
+//  Main loop
+// ═══════════════════════════════════════════════════
+function loop(ts) {
+  const dt = ts - lastTime; lastTime = ts;
+  fpsTimer += dt; fpsFrames++;
+  if (fpsTimer >= 500) {
+    fps = Math.round(fpsFrames / fpsTimer * 1000);
+    document.getElementById('hudFps').textContent = fps;
+    fpsFrames = 0; fpsTimer = 0;
+  }
+  animT += dt;
+
+  if (currentMode === '2d') render2D();
+  else if (currentMode === 'flow') renderFlow();
+  else if (currentMode === 'terrain') renderTerrain();
+
+  requestAnimationFrame(loop);
+}
+
+// ═══════════════════════════════════════════════════
+//  Controls
+// ═══════════════════════════════════════════════════
+const SLIDER_MAP = {
+  scale:         v => (v/1000 * 0.049 + 0.001),
+  octaves:       v => v,
+  persistence:   v => v/100,
+  lacunarity:    v => v/10,
+  speed:         v => v/20,
+  particleCount: v => v,
+};
+const DISPLAY_MAP = {
+  scale:         v => v.toFixed(4),
+  octaves:       v => v,
+  persistence:   v => v.toFixed(2),
+  lacunarity:    v => v.toFixed(2),
+  speed:         v => v.toFixed(1),
+  particleCount: v => Math.round(v),
+};
+
+function updateParam(name, input) {
+  const raw = parseFloat(input.value);
+  const mapper = SLIDER_MAP[name];
+  const val = mapper ? mapper(raw) : raw;
+  params[name] = val;
+  const displayEl = document.getElementById(name + 'Val');
+  if (displayEl) displayEl.textContent = DISPLAY_MAP[name] ? DISPLAY_MAP[name](val) : val;
+  if (name === 'particleCount') {
+    while (particles.length < val) {
+      particles.push({
+        x: Math.random()*canvas.width, y: Math.random()*canvas.height,
+        vx:0, vy:0, life:0, maxLife:150+Math.random()*200, hue:Math.random()*60,
+      });
+    }
+    particles.length = Math.round(val);
+  }
+}
+
+function setPalette(el, name) {
+  params.palette = name;
+  document.querySelectorAll('.color-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function toggleOpt(name) {
+  const btn = document.getElementById('btn-' + name);
+  const key = name === 'particles' ? 'showParticles'
+            : name === 'arrows'    ? 'showArrows'
+            :                        'showFade';
+  params[key] = !params[key];
+  btn.classList.toggle('active', params[key]);
+}
+
+function switchMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+mode)?.classList.add('active');
+
+  const labels = {'2d':'2D 纹理模式','flow':'流场模式','terrain':'地形模式','about':'关于'};
+  document.getElementById('modeLabel').textContent = labels[mode] || '';
+  document.getElementById('hudMode').textContent = labels[mode] || '';
+
+  const aboutPanel = document.getElementById('aboutPanel');
+  aboutPanel.style.display = mode === 'about' ? 'block' : 'none';
+  canvas.style.display = mode === 'about' ? 'none' : 'block';
+
+  if (mode === 'flow' && particles.length === 0) initParticles();
+  if (mode === 'flow') {
+    ctx.fillStyle = '#0d0d1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+}
+
+function randomizeSeed() {
+  const seed = Math.floor(Math.random() * 100000);
+  pn.reseed(seed);
+  if (currentMode === 'flow') {
+    ctx.fillStyle = '#0d0d1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    initParticles();
+  }
+}
+
+function saveImage() {
+  const link = document.createElement('a');
+  link.download = `perlin-${currentMode}-${Date.now()}.png`;
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+
+// Mouse tracking
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = Math.round(e.clientX - rect.left);
+  mouseY = Math.round(e.clientY - rect.top);
+  document.getElementById('hudMouse').textContent = `${mouseX},${mouseY}`;
+});
+
+// ═══════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════
+resize();
+initParticles();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
