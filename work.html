@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>项目管理器 - DaaKuuLaa</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            position: relative;
+            transition: background 0.5s ease;
+            animation: fadeIn 0.4s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s ease;
+            z-index: -1;
+        }
+
+        body.dark-mode::before {
+            opacity: 1;
+        }
+
+        .card,
+        .theme-toggle,
+        .username,
+        .bio,
+        .card-title,
+        .date-year,
+        .date-day,
+        .date-lunar,
+        .stat-value,
+        .stat-label,
+        .file-item,
+        .nav-bar,
+        .nav-item {
+            transition: all 0.4s ease;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .control-bar {
+            display: flex;
+            justify-content: flex-end;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .theme-toggle {
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 25px;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            color: #2d3748;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .theme-toggle:hover {
+            background: rgba(255, 255, 255, 0.35);
+            transform: translateY(-2px);
+        }
+
+        body.dark-mode .theme-toggle {
+            color: #f5f7fa;
+        }
+
+        .back-button {
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: #2d3748;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        body.dark-mode .back-button {
+            color: #f5f7fa;
+        }
+
+        .back-button:hover {
+            background: rgba(255, 255, 255, 0.35);
+            transform: translateY(-2px);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            color: #2d3748;
+            margin-bottom: 10px;
+        }
+
+        body.dark-mode .header h1 {
+            color: #f5f7fa;
+        }
+
+        .header p {
+            font-size: 16px;
+            color: #718096;
+        }
+
+        body.dark-mode .header p {
+            color: #a0aec0;
+        }
+
+        .nav-bar {
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            padding: 10px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+        }
+
+        body.dark-mode .nav-bar {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .nav-path {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 1;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            color: #4a5568;
+            transition: all 0.2s ease;
+        }
+
+        body.dark-mode .nav-item {
+            color: #a0aec0;
+        }
+
+        .nav-item:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        body.dark-mode .nav-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .nav-separator {
+            color: #718096;
+        }
+
+        body.dark-mode .nav-separator {
+            color: #4a5568;
+        }
+
+        .file-list {
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            padding: 20px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        body.dark-mode .file-list {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px 20px;
+            border-radius: 12px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+            animation: fadeInItem 0.5s ease-out forwards;
+            opacity: 0;
+        }
+
+        @keyframes fadeInItem {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .file-item:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateX(5px);
+        }
+
+        body.dark-mode .file-item {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        body.dark-mode .file-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .file-icon {
+            font-size: 24px;
+            width: 40px;
+            text-align: center;
+        }
+
+        .file-info {
+            flex: 1;
+        }
+
+        .file-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 4px;
+        }
+
+        body.dark-mode .file-name {
+            color: #f5f7fa;
+        }
+
+        .file-type {
+            font-size: 14px;
+            color: #718096;
+        }
+
+        body.dark-mode .file-type {
+            color: #a0aec0;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .empty-state .icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        .empty-state .title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 10px;
+        }
+
+        body.dark-mode .empty-state .title {
+            color: #f5f7fa;
+        }
+
+        .empty-state .subtitle {
+            font-size: 16px;
+            color: #718096;
+            margin-bottom: 20px;
+        }
+
+        body.dark-mode .empty-state .subtitle {
+            color: #a0aec0;
+        }
+
+        .empty-state .error-message {
+            font-size: 14px;
+            color: #e53e3e;
+        }
+
+        body.dark-mode .empty-state .error-message {
+            color: #fc8181;
+        }
+
+        .back-link {
+            display: inline-block;
+            margin-top: 30px;
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 25px;
+            text-decoration: none;
+            color: #2d3748;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        body.dark-mode .back-link {
+            color: #f5f7fa;
+        }
+
+        .back-link:hover {
+            background: rgba(255, 255, 255, 0.35);
+            transform: translateY(-2px);
+        }
+
+        @media (max-width: 768px) {
+            .file-item {
+                padding: 12px 15px;
+            }
+
+            .file-name {
+                font-size: 14px;
+            }
+
+            .file-type {
+                font-size: 12px;
+            }
+
+            .nav-path {
+                flex-wrap: wrap;
+            }
+
+            .nav-item {
+                font-size: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="control-bar">
+            <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn">明亮模式</button>
+        </div>
+        
+        <div class="header">
+            <h1 id="page-title">项目管理器</h1>
+            <p>个人项目管理系统</p>
+        </div>
+        
+        <div class="nav-bar">
+            <div class="nav-path" id="nav-path">
+                <div class="nav-item" data-path="">Work</div>
+            </div>
+            <button class="back-button" onclick="goBack()" id="back-button">↑</button>
+        </div>
+        
+        <div class="file-list" id="file-list">
+            <!-- 加载中 -->
+        </div>
+        
+        <div style="text-align: center;">
+            <a href="index.html" class="back-link">返回主页</a>
+        </div>
+    </div>
+
+    <script>
+        let currentPath = [];
+        let fileData = {
+            "name": "Work",
+            "path": "DaaKuuLaa.github.io/Work",
+            "type": "folder",
+            "projects": [
+                {
+                    "name": "ITclub",
+                    "path": "DaaKuuLaa.github.io/Work/ITclub",
+                    "type": "folder",
+                    "projects": [
+                        {
+                            "name": "1",
+                            "path": "DaaKuuLaa.github.io/Work/ITclub/1",
+                            "type": "folder",
+                            "projects": [
+                                {
+                                    "name": ".trae",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae",
+                                    "type": "folder",
+                                    "projects": [
+                                        {
+                                            "name": "documents",
+                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/documents",
+                                            "type": "folder",
+                                            "projects": [
+                                                {
+                                                    "name": "第三模块阴影全面修复计划.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/documents/第三模块阴影全面修复计划.md",
+                                                    "type": "markdown"
+                                                },
+                                                {
+                                                    "name": "阴影错误修复计划.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/documents/阴影错误修复计划.md",
+                                                    "type": "markdown"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "name": "specs",
+                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/specs",
+                                            "type": "folder",
+                                            "projects": [
+                                                {
+                                                    "name": "module4_parameter_demo",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/specs/module4_parameter_demo",
+                                                    "type": "folder",
+                                                    "projects": [
+                                                        {
+                                                            "name": "spec.md",
+                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/specs/module4_parameter_demo/spec.md",
+                                                            "type": "markdown"
+                                                        },
+                                                        {
+                                                            "name": "tasks.md",
+                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/specs/module4_parameter_demo/tasks.md",
+                                                            "type": "markdown"
+                                                        }
+                                                    ]
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": ".workbuddy",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy",
+                                    "type": "folder",
+                                    "projects": [
+                                        {
+                                            "name": "memory",
+                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/memory",
+                                            "type": "folder",
+                                            "projects": [
+                                                {
+                                                    "name": "2026-03-28.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/memory/2026-03-28.md",
+                                                    "type": "markdown"
+                                                },
+                                                {
+                                                    "name": "2026-03-29.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/memory/2026-03-29.md",
+                                                    "type": "markdown"
+                                                },
+                                                {
+                                                    "name": "MEMORY.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/memory/MEMORY.md",
+                                                    "type": "markdown"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "name": "rules",
+                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/rules",
+                                            "type": "folder",
+                                            "projects": [
+                                                {
+                                                    "name": "任务执行规范.mdc",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/rules/任务执行规范.mdc",
+                                                    "type": "markdown"
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "backup",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup",
+                                    "type": "folder",
+                                    "projects": [
+                                        {
+                                            "name": "v0.0.0",
+                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0",
+                                            "type": "folder",
+                                            "projects": [
+                                                {
+                                                    "name": "index",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0",
+                                                    "type": "index",
+                                                    "projects": [
+                                                        {
+                                                            "name": "index.html",
+                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/index.html",
+                                                            "type": "html"
+                                                        },
+                                                        {
+                                                            "name": "css",
+                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/css",
+                                                            "type": "folder",
+                                                            "projects": [
+                                                                {
+                                                                    "name": "components.css",
+                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/css/components.css",
+                                                                    "type": "css"
+                                                                },
+                                                                {
+                                                                    "name": "main.css",
+                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/css/main.css",
+                                                                    "type": "css"
+                                                                },
+                                                                {
+                                                                    "name": "visualizations.css",
+                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/css/visualizations.css",
+                                                                    "type": "css"
+                                                                }
+                                                            ]
+                                                        },
+                                                        {
+                                                            "name": "js",
+                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js",
+                                                            "type": "folder",
+                                                            "projects": [
+                                                                {
+                                                                    "name": "main.js",
+                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/main.js",
+                                                                    "type": "javascript"
+                                                                },
+                                                                {
+                                                                    "name": "navigation.js",
+                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/navigation.js",
+                                                                    "type": "javascript"
+                                                                },
+                                                                {
+                                                                    "name": "perlin-noise.js",
+                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/perlin-noise.js",
+                                                                    "type": "javascript"
+                                                                },
+                                                                {
+                                                                    "name": "utils.js",
+                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/utils.js",
+                                                                    "type": "javascript"
+                                                                },
+                                                                {
+                                                                    "name": "visualizations.js",
+                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/visualizations.js",
+                                                                    "type": "javascript"
+                                                                }
+                                                            ]
+                                                        }
+                                                    ]
+                                                },
+                                                {
+                                                    "name": "README.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/README.md",
+                                                    "type": "markdown"
+                                                },
+                                                {
+                                                    "name": "RULE.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/RULE.md",
+                                                    "type": "markdown"
+                                                },
+                                                {
+                                                    "name": "USE.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/USE.md",
+                                                    "type": "markdown"
+                                                },
+                                                {
+                                                    "name": "Work.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/Work.md",
+                                                    "type": "markdown"
+                                                },
+                                                {
+                                                    "name": "优化效果说明.md",
+                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/优化效果说明.md",
+                                                    "type": "markdown"
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "index",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1",
+                                    "type": "index",
+                                    "projects": [
+                                        {
+                                            "name": "index.html",
+                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/index.html",
+                                            "type": "html"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "README.md",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/README.md",
+                                    "type": "markdown"
+                                },
+                                {
+                                    "name": "RULE.md",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/RULE.md",
+                                    "type": "markdown"
+                                },
+                                {
+                                    "name": "TASK_REPORT_Module3Page5.md",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/TASK_REPORT_Module3Page5.md",
+                                    "type": "markdown"
+                                },
+                                {
+                                    "name": "USE.md",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/USE.md",
+                                    "type": "markdown"
+                                },
+                                {
+                                    "name": "Work.md",
+                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/Work.md",
+                                    "type": "markdown"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        };
+
+        function toggleTheme() {
+            const body = document.body;
+            const toggle = document.querySelector('.theme-toggle');
+            body.classList.toggle('dark-mode');
+            
+            const isDark = body.classList.contains('dark-mode');
+            toggle.textContent = isDark ? '黑暗模式' : '明亮模式';
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+        }
+
+        function syncTheme() {
+            const theme = localStorage.getItem('theme');
+            const body = document.body;
+            const toggle = document.querySelector('.theme-toggle');
+            
+            if (theme === 'dark') {
+                body.classList.add('dark-mode');
+                toggle.textContent = '黑暗模式';
+            } else {
+                body.classList.remove('dark-mode');
+                toggle.textContent = '明亮模式';
+            }
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'd' || e.key === 'D') {
+                if (!e.target.matches('input, textarea')) {
+                    toggleTheme();
+                }
+            }
+        });
+
+        function sortItems(items) {
+            return items.sort((a, b) => {
+                const typeOrder = {
+                    'folder': 0,
+                    'index': 1,
+                    'default': 2
+                };
+                
+                const typeA = a.type === 'folder' ? 0 : (a.type === 'index' ? 1 : 2);
+                const typeB = b.type === 'folder' ? 0 : (b.type === 'index' ? 1 : 2);
+                
+                if (typeA !== typeB) {
+                    return typeA - typeB;
+                }
+                
+                return a.name.localeCompare(b.name, 'zh-CN');
+            });
+        }
+
+        function updateNavPath() {
+            const navPath = document.getElementById('nav-path');
+            navPath.innerHTML = '';
+            
+            const rootItem = document.createElement('div');
+            rootItem.className = 'nav-item';
+            rootItem.textContent = 'Work';
+            rootItem.dataset.path = '';
+            rootItem.onclick = () => navigateTo([]);
+            navPath.appendChild(rootItem);
+            
+            let currentPathStr = '';
+            currentPath.forEach((segment, index) => {
+                const separator = document.createElement('span');
+                separator.className = 'nav-separator';
+                separator.textContent = '>';
+                navPath.appendChild(separator);
+                
+                currentPathStr += segment + '/';
+                const item = document.createElement('div');
+                item.className = 'nav-item';
+                item.textContent = segment;
+                item.dataset.path = currentPath.slice(0, index + 1).join('/');
+                item.onclick = () => navigateTo(currentPath.slice(0, index + 1));
+                navPath.appendChild(item);
+            });
+            
+            document.getElementById('back-button').style.display = currentPath.length > 0 ? 'flex' : 'none';
+        }
+
+        function getCurrentItems() {
+            let items = fileData.projects;
+            
+            for (const segment of currentPath) {
+                const found = items.find(item => item.name === segment);
+                if (found && found.projects) {
+                    items = found.projects;
+                } else {
+                    return [];
+                }
+            }
+            
+            return items;
+        }
+
+        function renderItems() {
+            const fileList = document.getElementById('file-list');
+            const items = getCurrentItems();
+            const sortedItems = sortItems([...items]);
+            
+            fileList.innerHTML = '';
+            
+            if (sortedItems.length === 0) {
+                fileList.innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">📂</div>
+                        <div class="title">空空如也</div>
+                        <div class="subtitle">暂无文件或文件夹</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            sortedItems.forEach((item, index) => {
+                const fileItem = document.createElement('a');
+                fileItem.className = 'file-item';
+                fileItem.style.animationDelay = `${index * 0.1}s`;
+                
+                let icon = '📄';
+                let typeText = '文件';
+                
+                if (item.type === 'folder') {
+                    icon = '📁';
+                    typeText = '文件夹';
+                    fileItem.href = '#';
+                    fileItem.onclick = (e) => {
+                        e.preventDefault();
+                        navigateTo([...currentPath, item.name]);
+                    };
+                } else if (item.type === 'index') {
+                    icon = '🏠';
+                    typeText = '网页';
+                    fileItem.href = item.path;
+                    fileItem.target = '_blank';
+                } else {
+                    fileItem.href = item.path;
+                    fileItem.target = '_blank';
+                }
+                
+                fileItem.innerHTML = `
+                    <div class="file-icon">${icon}</div>
+                    <div class="file-info">
+                        <div class="file-name">${item.name}</div>
+                        <div class="file-type">${typeText}</div>
+                    </div>
+                `;
+                
+                fileList.appendChild(fileItem);
+            });
+        }
+
+        function navigateTo(path) {
+            currentPath = path;
+            updateNavPath();
+            renderItems();
+        }
+
+        function goBack() {
+            if (currentPath.length > 0) {
+                currentPath = currentPath.slice(0, -1);
+                updateNavPath();
+                renderItems();
+            }
+        }
+
+        syncTheme();
+        updateNavPath();
+        renderItems();
+    </script>
+</body>
+</html>
