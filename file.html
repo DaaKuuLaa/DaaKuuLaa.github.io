@@ -541,7 +541,7 @@
             }
             
             sortedItems.forEach((item, index) => {
-                const fileItem = document.createElement('a');
+                const fileItem = document.createElement('div');
                 fileItem.className = 'file-item';
                 fileItem.style.animationDelay = `${index * 0.1}s`;
                 
@@ -551,19 +551,9 @@
                 if (item.type === 'folder') {
                     icon = '📁';
                     typeText = '文件夹';
-                    fileItem.href = '#';
-                    fileItem.onclick = (e) => {
-                        e.preventDefault();
-                        navigateTo([...currentPath, item.name]);
-                    };
                 } else if (item.type === 'index') {
                     icon = '🏠';
                     typeText = '网页';
-                    fileItem.href = item.path;
-                    fileItem.target = '_blank';
-                } else {
-                    fileItem.href = item.path;
-                    fileItem.target = '_blank';
                 }
                 
                 fileItem.innerHTML = `
@@ -573,6 +563,45 @@
                         <div class="file-type">${typeText}</div>
                     </div>
                 `;
+                
+                // 处理点击事件
+                let clickTimer = null;
+                fileItem.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    
+                    if (clickTimer) {
+                        clearTimeout(clickTimer);
+                        clickTimer = null;
+                    }
+                    
+                    if (item.type === 'folder') {
+                        // 文件夹直接进入
+                        navigateTo([...currentPath, item.name]);
+                    } else if (item.type === 'index') {
+                        // 单击跳转到 path
+                        clickTimer = setTimeout(() => {
+                            window.open(item.path, '_blank');
+                        }, 200);
+                    } else {
+                        // 普通文件跳转到 path
+                        window.open(item.path, '_blank');
+                    }
+                });
+                
+                // 处理双击事件（只对 index 类型）
+                fileItem.addEventListener('dblclick', (e) => {
+                    e.preventDefault();
+                    
+                    if (clickTimer) {
+                        clearTimeout(clickTimer);
+                        clickTimer = null;
+                    }
+                    
+                    if (item.type === 'index') {
+                        // 双击 index 进入内部
+                        navigateTo([...currentPath, item.name]);
+                    }
+                });
                 
                 fileList.appendChild(fileItem);
             });
