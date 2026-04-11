@@ -826,11 +826,23 @@
                     } else if (item.type === 'index') {
                         // 单击跳转到 path
                         clickTimer = setTimeout(() => {
-                            window.open(item.path, '_blank');
+                            let url = item.path;
+                            // 转换为完整 URL
+                            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                                // 假设是 GitHub Pages 路径
+                                url = 'https://' + url;
+                            }
+                            window.open(url, '_blank');
                         }, 200);
                     } else {
                         // 普通文件跳转到 path
-                        window.open(item.path, '_blank');
+                        let url = item.path;
+                        // 转换为完整 URL
+                        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                            // 假设是 GitHub Pages 路径
+                            url = 'https://' + url;
+                        }
+                        window.open(url, '_blank');
                     }
                 });
                 
