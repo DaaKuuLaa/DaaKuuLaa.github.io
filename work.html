@@ -719,6 +719,16 @@
                     toggleTheme();
                 }
             }
+            
+            // 快捷键：Esc 返回主界面
+            if (e.key === 'Escape') {
+                window.location.href = 'index.html';
+            }
+            
+            // 快捷键：Backspace 返回上一层
+            if (e.key === 'Backspace') {
+                goBack();
+            }
         });
 
         function sortItems(items) {
