@@ -456,12 +456,22 @@ class PathManager(QMainWindow):
             if parent:
                 parent_data = parent.data(0, Qt.UserRole)
                 item_data = item.data(0, Qt.UserRole)
-                parent_data["projects"] = [p for p in parent_data["projects"] if p["name"] != item_data["name"]]
+                # 直接从 self.data 中删除，而不是只修改 parent_data
+                self.remove_from_data(self.data, item_data["name"])
                 parent.removeChild(item)
                 self.selected_items.remove(item)
         
         self.save_json()
-        # 不重新渲染，只移除 UI 中的项
+        print(f"已保存 JSON，删除了 {len(self.selected_items)} 个项目")
+    
+    def remove_from_data(self, data, name):
+        """递归从 data 中删除指定名称的项目"""
+        if "projects" in data:
+            data["projects"] = [p for p in data["projects"] if p["name"] != name]
+            # 递归检查子项目
+            for project in data["projects"]:
+                if "projects" in project:
+                    self.remove_from_data(project, name)
     
     def refresh_view(self):
         """刷新视图，不重新加载整个树"""
