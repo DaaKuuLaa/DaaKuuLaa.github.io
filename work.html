@@ -436,258 +436,33 @@
 
     <script>
         let currentPath = [];
-        let fileData = {
-            "name": "Work",
-            "path": "DaaKuuLaa.github.io/Work",
-            "type": "folder",
-            "projects": [
-                {
-                    "name": "ITclub",
-                    "path": "DaaKuuLaa.github.io/Work/ITclub",
-                    "type": "folder",
-                    "projects": [
-                        {
-                            "name": "1",
-                            "path": "DaaKuuLaa.github.io/Work/ITclub/1",
-                            "type": "folder",
-                            "projects": [
-                                {
-                                    "name": ".trae",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae",
-                                    "type": "folder",
-                                    "projects": [
-                                        {
-                                            "name": "documents",
-                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/documents",
-                                            "type": "folder",
-                                            "projects": [
-                                                {
-                                                    "name": "第三模块阴影全面修复计划.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/documents/第三模块阴影全面修复计划.md",
-                                                    "type": "markdown"
-                                                },
-                                                {
-                                                    "name": "阴影错误修复计划.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/documents/阴影错误修复计划.md",
-                                                    "type": "markdown"
-                                                }
-                                            ]
-                                        },
-                                        {
-                                            "name": "specs",
-                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/specs",
-                                            "type": "folder",
-                                            "projects": [
-                                                {
-                                                    "name": "module4_parameter_demo",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/specs/module4_parameter_demo",
-                                                    "type": "folder",
-                                                    "projects": [
-                                                        {
-                                                            "name": "spec.md",
-                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/specs/module4_parameter_demo/spec.md",
-                                                            "type": "markdown"
-                                                        },
-                                                        {
-                                                            "name": "tasks.md",
-                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.trae/specs/module4_parameter_demo/tasks.md",
-                                                            "type": "markdown"
-                                                        }
-                                                    ]
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                },
-                                {
-                                    "name": ".workbuddy",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy",
-                                    "type": "folder",
-                                    "projects": [
-                                        {
-                                            "name": "memory",
-                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/memory",
-                                            "type": "folder",
-                                            "projects": [
-                                                {
-                                                    "name": "2026-03-28.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/memory/2026-03-28.md",
-                                                    "type": "markdown"
-                                                },
-                                                {
-                                                    "name": "2026-03-29.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/memory/2026-03-29.md",
-                                                    "type": "markdown"
-                                                },
-                                                {
-                                                    "name": "MEMORY.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/memory/MEMORY.md",
-                                                    "type": "markdown"
-                                                }
-                                            ]
-                                        },
-                                        {
-                                            "name": "rules",
-                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/rules",
-                                            "type": "folder",
-                                            "projects": [
-                                                {
-                                                    "name": "任务执行规范.mdc",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/.workbuddy/rules/任务执行规范.mdc",
-                                                    "type": "markdown"
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                },
-                                {
-                                    "name": "backup",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup",
-                                    "type": "folder",
-                                    "projects": [
-                                        {
-                                            "name": "v0.0.0",
-                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0",
-                                            "type": "folder",
-                                            "projects": [
-                                                {
-                                                    "name": "index",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0",
-                                                    "type": "index",
-                                                    "projects": [
-                                                        {
-                                                            "name": "index.html",
-                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/index.html",
-                                                            "type": "html"
-                                                        },
-                                                        {
-                                                            "name": "css",
-                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/css",
-                                                            "type": "folder",
-                                                            "projects": [
-                                                                {
-                                                                    "name": "components.css",
-                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/css/components.css",
-                                                                    "type": "css"
-                                                                },
-                                                                {
-                                                                    "name": "main.css",
-                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/css/main.css",
-                                                                    "type": "css"
-                                                                },
-                                                                {
-                                                                    "name": "visualizations.css",
-                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/css/visualizations.css",
-                                                                    "type": "css"
-                                                                }
-                                                            ]
-                                                        },
-                                                        {
-                                                            "name": "js",
-                                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js",
-                                                            "type": "folder",
-                                                            "projects": [
-                                                                {
-                                                                    "name": "main.js",
-                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/main.js",
-                                                                    "type": "javascript"
-                                                                },
-                                                                {
-                                                                    "name": "navigation.js",
-                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/navigation.js",
-                                                                    "type": "javascript"
-                                                                },
-                                                                {
-                                                                    "name": "perlin-noise.js",
-                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/perlin-noise.js",
-                                                                    "type": "javascript"
-                                                                },
-                                                                {
-                                                                    "name": "utils.js",
-                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/utils.js",
-                                                                    "type": "javascript"
-                                                                },
-                                                                {
-                                                                    "name": "visualizations.js",
-                                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/js/visualizations.js",
-                                                                    "type": "javascript"
-                                                                }
-                                                            ]
-                                                        }
-                                                    ]
-                                                },
-                                                {
-                                                    "name": "README.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/README.md",
-                                                    "type": "markdown"
-                                                },
-                                                {
-                                                    "name": "RULE.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/RULE.md",
-                                                    "type": "markdown"
-                                                },
-                                                {
-                                                    "name": "USE.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/USE.md",
-                                                    "type": "markdown"
-                                                },
-                                                {
-                                                    "name": "Work.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/Work.md",
-                                                    "type": "markdown"
-                                                },
-                                                {
-                                                    "name": "优化效果说明.md",
-                                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/backup/v0.0.0/优化效果说明.md",
-                                                    "type": "markdown"
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                },
-                                {
-                                    "name": "index",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1",
-                                    "type": "index",
-                                    "projects": [
-                                        {
-                                            "name": "index.html",
-                                            "path": "DaaKuuLaa.github.io/Work/ITclub/1/index.html",
-                                            "type": "html"
-                                        }
-                                    ]
-                                },
-                                {
-                                    "name": "README.md",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/README.md",
-                                    "type": "markdown"
-                                },
-                                {
-                                    "name": "RULE.md",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/RULE.md",
-                                    "type": "markdown"
-                                },
-                                {
-                                    "name": "TASK_REPORT_Module3Page5.md",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/TASK_REPORT_Module3Page5.md",
-                                    "type": "markdown"
-                                },
-                                {
-                                    "name": "USE.md",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/USE.md",
-                                    "type": "markdown"
-                                },
-                                {
-                                    "name": "Work.md",
-                                    "path": "DaaKuuLaa.github.io/Work/ITclub/1/Work.md",
-                                    "type": "markdown"
-                                }
-                            ]
-                        }
-                    ]
+        let fileData = {};
+
+        // 加载 JSON 文件
+        async function loadFileData() {
+            try {
+                const response = await fetch('work.json');
+                if (!response.ok) {
+                    throw new Error('无法加载 work.json');
                 }
-            ]
-        };
+                fileData = await response.json();
+                console.log('加载成功:', fileData);
+                console.log('projects:', fileData.projects);
+                updateNavPath();
+                renderItems();
+            } catch (error) {
+                console.error('加载文件数据失败:', error);
+                // 使用默认数据
+                fileData = {
+                    "name": "Work",
+                    "path": "Work",
+                    "type": "folder",
+                    "projects": []
+                };
+                updateNavPath();
+                renderItems();
+            }
+        }
 
         function toggleTheme() {
             const body = document.body;
@@ -907,8 +682,7 @@
         }
 
         syncTheme();
-        updateNavPath();
-        renderItems();
+        loadFileData();
     </script>
 </body>
 </html>
