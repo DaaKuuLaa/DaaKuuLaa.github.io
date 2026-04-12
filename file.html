@@ -436,12 +436,33 @@
 
     <script>
         let currentPath = [];
-        let fileData = {
-            "name": "File",
-            "path": "DaaKuuLaa.github.io/File",
-            "type": "folder",
-            "projects": []
-        };
+        let fileData = {};
+
+        // 加载 JSON 文件
+        async function loadFileData() {
+            try {
+                const response = await fetch('file.json');
+                if (!response.ok) {
+                    throw new Error('无法加载 file.json');
+                }
+                fileData = await response.json();
+                console.log('加载成功:', fileData);
+                console.log('projects:', fileData.projects);
+                updateNavPath();
+                renderItems();
+            } catch (error) {
+                console.error('加载文件数据失败:', error);
+                // 使用默认数据
+                fileData = {
+                    "name": "File",
+                    "path": "File",
+                    "type": "folder",
+                    "projects": []
+                };
+                updateNavPath();
+                renderItems();
+            }
+        }
 
         function toggleTheme() {
             const body = document.body;
@@ -661,8 +682,7 @@
         }
 
         syncTheme();
-        updateNavPath();
-        renderItems();
+        loadFileData();
     </script>
 </body>
 </html>

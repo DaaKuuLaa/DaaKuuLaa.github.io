@@ -234,7 +234,11 @@ class PathManager(QMainWindow):
                 self.refresh_view()
     
     def add_file_to_json(self, file_path):
+        # 获取相对路径（从 json_dir 开始）
         relative_path = file_path.replace(self.json_dir + "\\", "").replace("\\", "/")
+        # 添加 DaaKuuLaa.github.io/ 前缀
+        if not relative_path.startswith("DaaKuuLaa.github.io/"):
+            relative_path = "DaaKuuLaa.github.io/" + relative_path
         name = os.path.basename(file_path)
         
         # 确定文件类型
@@ -297,6 +301,9 @@ class PathManager(QMainWindow):
             for file in files:
                 file_path = os.path.join(root, file)
                 relative_path = file_path.replace(self.json_dir + "\\", "").replace("\\", "/")
+                # 添加 DaaKuuLaa.github.io/ 前缀
+                if not relative_path.startswith("DaaKuuLaa.github.io/"):
+                    relative_path = "DaaKuuLaa.github.io/" + relative_path
                 name = file
                 
                 ext = os.path.splitext(file)[1].lower()
@@ -331,6 +338,9 @@ class PathManager(QMainWindow):
         for item in os.listdir(directory):
             item_path = os.path.join(directory, item)
             relative_path = item_path.replace(self.json_dir + "\\", "").replace("\\", "/")
+            # 添加 DaaKuuLaa.github.io/ 前缀
+            if not relative_path.startswith("DaaKuuLaa.github.io/"):
+                relative_path = "DaaKuuLaa.github.io/" + relative_path
             
             if os.path.isdir(item_path):
                 new_item = {
