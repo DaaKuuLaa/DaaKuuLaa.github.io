@@ -6,6 +6,7 @@
 class LanguageSwitcher {
     constructor() {
         this.currentLanguage = 'zh'; // 默认中文
+        this.isBilingual = false; // 是否双语模式
         this.translations = {};
         this.init();
     }
@@ -256,12 +257,24 @@ class LanguageSwitcher {
                 'module5.page1.title': '噪声算法分类',
                 'module5.page1.whiteNoise': '白噪声',
                 'module5.page1.whiteNoiseDesc': '完全随机，无相关性',
+                'module5.page1.whiteNoise.continuity': '连续性：低',
+                'module5.page1.whiteNoise.naturalness': '自然度：低',
+                'module5.page1.whiteNoise.speed': '计算速度：快',
                 'module5.page1.perlinNoise': '柏林噪声',
                 'module5.page1.perlinNoiseDesc': '伪随机，连续平滑',
+                'module5.page1.perlinNoise.continuity': '连续性：高',
+                'module5.page1.perlinNoise.naturalness': '自然度：高',
+                'module5.page1.perlinNoise.speed': '计算速度：中等',
                 'module5.page1.simplexNoise': 'Simplex 噪声',
                 'module5.page1.simplexNoiseDesc': '柏林噪声的改进版本',
+                'module5.page1.simplexNoise.continuity': '连续性：高',
+                'module5.page1.simplexNoise.naturalness': '自然度：高',
+                'module5.page1.simplexNoise.speed': '计算速度：快',
                 'module5.page1.fractalNoise': '分形噪声',
                 'module5.page1.fractalNoiseDesc': '多层噪声叠加',
+                'module5.page1.fractalNoise.continuity': '连续性：高',
+                'module5.page1.fractalNoise.naturalness': '自然度：高',
+                'module5.page1.fractalNoise.speed': '计算速度：慢',
                 'module5.page1.vizTitle': '噪声类型对比可视化',
                 'module5.page2.title': '柏林噪声 vs 白噪声',
                 'module5.page2.whiteNoise': '白噪声',
@@ -538,12 +551,24 @@ class LanguageSwitcher {
                 'module5.page1.title': 'Noise Algorithm Types',
                 'module5.page1.whiteNoise': 'White Noise',
                 'module5.page1.whiteNoiseDesc': 'Completely random, no correlation',
+                'module5.page1.whiteNoise.continuity': 'Continuity: Low',
+                'module5.page1.whiteNoise.naturalness': 'Naturalness: Low',
+                'module5.page1.whiteNoise.speed': 'Speed: Fast',
                 'module5.page1.perlinNoise': 'Perlin Noise',
                 'module5.page1.perlinNoiseDesc': 'Pseudo-random, smooth and continuous',
+                'module5.page1.perlinNoise.continuity': 'Continuity: High',
+                'module5.page1.perlinNoise.naturalness': 'Naturalness: High',
+                'module5.page1.perlinNoise.speed': 'Speed: Medium',
                 'module5.page1.simplexNoise': 'Simplex Noise',
                 'module5.page1.simplexNoiseDesc': 'Improved Perlin Noise',
+                'module5.page1.simplexNoise.continuity': 'Continuity: High',
+                'module5.page1.simplexNoise.naturalness': 'Naturalness: High',
+                'module5.page1.simplexNoise.speed': 'Speed: Fast',
                 'module5.page1.fractalNoise': 'Fractal Noise',
                 'module5.page1.fractalNoiseDesc': 'Multiple noise layers',
+                'module5.page1.fractalNoise.continuity': 'Continuity: High',
+                'module5.page1.fractalNoise.naturalness': 'Naturalness: High',
+                'module5.page1.fractalNoise.speed': 'Speed: Slow',
                 'module5.page1.vizTitle': 'Noise Types Comparison',
                 'module5.page2.title': 'Perlin Noise vs White Noise',
                 'module5.page2.whiteNoise': 'White Noise',
@@ -639,10 +664,17 @@ class LanguageSwitcher {
     bindEvents() {
         const languageToggleBtn = document.getElementById('languageToggleBtn');
         if (languageToggleBtn) {
+            // 单击切换语言
             languageToggleBtn.addEventListener('click', () => this.toggleLanguage());
+            
+            // 双击切换双语模式
+            languageToggleBtn.addEventListener('dblclick', (e) => {
+                e.preventDefault();
+                this.toggleBilingual();
+            });
         }
         
-        // 添加键盘快捷键（L 键切换语言）
+        // 添加键盘快捷键（L 键切换语言，D 键切换双语）
         document.addEventListener('keydown', (e) => {
             // 检查是否按下了 L 键，且不在输入框中
             if (e.key === 'l' || e.key === 'L') {
@@ -650,6 +682,14 @@ class LanguageSwitcher {
                 if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
                     e.preventDefault();
                     this.toggleLanguage();
+                }
+            }
+            // 检查是否按下了 D 键，且不在输入框中
+            if (e.key === 'd' || e.key === 'D') {
+                // 如果焦点不在输入框或文本域中，则切换双语模式
+                if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+                    e.preventDefault();
+                    this.toggleBilingual();
                 }
             }
         });
@@ -660,9 +700,16 @@ class LanguageSwitcher {
         const savedLanguage = localStorage.getItem('preferredLanguage');
         if (savedLanguage && (savedLanguage === 'zh' || savedLanguage === 'en')) {
             this.currentLanguage = savedLanguage;
-            this.updateLanguageButton();
-            this.applyTranslations();
         }
+        
+        // 加载双语模式设置
+        const savedBilingual = localStorage.getItem('bilingualMode');
+        if (savedBilingual !== null) {
+            this.isBilingual = savedBilingual === 'true';
+        }
+        
+        this.updateLanguageButton();
+        this.applyTranslations();
     }
 
     // 切换语言
@@ -673,17 +720,32 @@ class LanguageSwitcher {
         this.applyTranslations();
     }
 
+    // 切换双语模式
+    toggleBilingual() {
+        this.isBilingual = !this.isBilingual;
+        localStorage.setItem('bilingualMode', this.isBilingual);
+        this.updateLanguageButton();
+        this.applyTranslations();
+        console.log('Bilingual mode:', this.isBilingual ? 'enabled' : 'disabled');
+    }
+
     // 更新语言按钮文本
     updateLanguageButton() {
         const languageText = document.querySelector('.language-text');
         if (languageText) {
-            languageText.textContent = this.currentLanguage === 'zh' ? '中文' : 'English';
+            if (this.isBilingual) {
+                languageText.textContent = '双语';
+            } else {
+                languageText.textContent = this.currentLanguage === 'zh' ? '中文' : 'English';
+            }
         }
     }
 
     // 应用翻译
     applyTranslations() {
         const translations = this.translations[this.currentLanguage];
+        const zhTranslations = this.translations['zh'];
+        const enTranslations = this.translations['en'];
         if (!translations) return;
 
         // 更新所有带有 data-i18n 属性的元素
@@ -697,15 +759,42 @@ class LanguageSwitcher {
                 } else if (element.tagName === 'BUTTON' && !element.querySelector('span')) {
                     // 按钮且没有子 span，直接设置文本
                     const icon = element.querySelector('i');
-                    if (icon) {
-                        element.innerHTML = '';
-                        element.appendChild(icon.cloneNode(true));
-                        element.appendChild(document.createTextNode(' ' + translation));
+                    if (this.isBilingual) {
+                        // 双语模式：显示中文和英文
+                        const zhText = zhTranslations[key] || '';
+                        const enText = enTranslations[key] || '';
+                        if (icon) {
+                            element.innerHTML = '';
+                            element.appendChild(icon.cloneNode(true));
+                            const textSpan = document.createElement('span');
+                            textSpan.innerHTML = zhText + '<br>' + enText;
+                            element.appendChild(textSpan);
+                        } else {
+                            element.innerHTML = zhText + '<br>' + enText;
+                        }
                     } else {
-                        element.textContent = translation;
+                        if (icon) {
+                            element.innerHTML = '';
+                            element.appendChild(icon.cloneNode(true));
+                            element.appendChild(document.createTextNode(' ' + translation));
+                        } else {
+                            element.textContent = translation;
+                        }
                     }
                 } else {
-                    element.innerHTML = translation;
+                    if (this.isBilingual) {
+                        // 双语模式：显示中文和英文
+                        const zhText = zhTranslations[key] || '';
+                        const enText = enTranslations[key] || '';
+                        // 如果当前语言是中文，显示 中文<br>英文；否则显示 英文<br>中文
+                        if (this.currentLanguage === 'zh') {
+                            element.innerHTML = zhText + '<br>' + enText;
+                        } else {
+                            element.innerHTML = enText + '<br>' + zhText;
+                        }
+                    } else {
+                        element.innerHTML = translation;
+                    }
                 }
             }
         });
@@ -730,12 +819,14 @@ class LanguageSwitcher {
         });
         document.dispatchEvent(event);
         
-        console.log('Language applied:', this.currentLanguage);
+        console.log('Language applied:', this.currentLanguage, 'Bilingual:', this.isBilingual);
     }
 
     // 更新导航按钮
     updateNavigationButtons() {
         const translations = this.translations[this.currentLanguage];
+        const zhTranslations = this.translations['zh'];
+        const enTranslations = this.translations['en'];
         const navButtons = document.querySelectorAll('.nav-btn[data-module]');
         
         const moduleKeys = [
@@ -752,7 +843,13 @@ class LanguageSwitcher {
             if (key && translations[key]) {
                 const span = button.querySelector('span');
                 if (span) {
-                    span.textContent = translations[key];
+                    if (this.isBilingual) {
+                        const zhText = zhTranslations[key] || '';
+                        const enText = enTranslations[key] || '';
+                        span.innerHTML = zhText + '<br>' + enText;
+                    } else {
+                        span.textContent = translations[key];
+                    }
                 }
             }
         });
@@ -780,15 +877,25 @@ class LanguageSwitcher {
     // 更新模块标题和描述
     updateModuleContent() {
         const translations = this.translations[this.currentLanguage];
+        const zhTranslations = this.translations['zh'];
+        const enTranslations = this.translations['en'];
         
         // 更新折叠标题
         const collapsedTitle = document.querySelector('.collapsed-title h2');
         if (collapsedTitle) {
             const icon = collapsedTitle.querySelector('i');
             if (icon && translations['collapsed.title']) {
-                collapsedTitle.innerHTML = '';
-                collapsedTitle.appendChild(icon.cloneNode(true));
-                collapsedTitle.appendChild(document.createTextNode(' ' + translations['collapsed.title']));
+                if (this.isBilingual) {
+                    const zhText = zhTranslations['collapsed.title'] || '';
+                    const enText = enTranslations['collapsed.title'] || '';
+                    collapsedTitle.innerHTML = '';
+                    collapsedTitle.appendChild(icon.cloneNode(true));
+                    collapsedTitle.appendChild(document.createTextNode(' ' + zhText + ' / ' + enText));
+                } else {
+                    collapsedTitle.innerHTML = '';
+                    collapsedTitle.appendChild(icon.cloneNode(true));
+                    collapsedTitle.appendChild(document.createTextNode(' ' + translations['collapsed.title']));
+                }
             }
         }
         
@@ -806,14 +913,28 @@ class LanguageSwitcher {
                 // 保留图标，只更新文本
                 const icon = h2.querySelector('i');
                 if (icon) {
-                    h2.innerHTML = '';
-                    h2.appendChild(icon.cloneNode(true));
-                    h2.appendChild(document.createTextNode(' ' + translations[titleKey]));
+                    if (this.isBilingual) {
+                        const zhText = zhTranslations[titleKey] || '';
+                        const enText = enTranslations[titleKey] || '';
+                        h2.innerHTML = '';
+                        h2.appendChild(icon.cloneNode(true));
+                        h2.appendChild(document.createTextNode(' ' + zhText + ' / ' + enText));
+                    } else {
+                        h2.innerHTML = '';
+                        h2.appendChild(icon.cloneNode(true));
+                        h2.appendChild(document.createTextNode(' ' + translations[titleKey]));
+                    }
                 }
             }
             
             if (p && translations[descKey]) {
-                p.textContent = translations[descKey];
+                if (this.isBilingual) {
+                    const zhText = zhTranslations[descKey] || '';
+                    const enText = enTranslations[descKey] || '';
+                    p.textContent = zhText + ' / ' + enText;
+                } else {
+                    p.textContent = translations[descKey];
+                }
             }
         });
     }
@@ -821,6 +942,8 @@ class LanguageSwitcher {
     // 更新页面导航标题
     updatePageNavTitles() {
         const translations = this.translations[this.currentLanguage];
+        const zhTranslations = this.translations['zh'];
+        const enTranslations = this.translations['en'];
         
         // 更新所有页面导航按钮的 title 属性
         document.querySelectorAll('.page-nav-btn[data-page]').forEach(button => {
@@ -832,7 +955,13 @@ class LanguageSwitcher {
             const key = `module${moduleId}.page${pageId}.navTitle`;
             
             if (translations[key]) {
-                button.setAttribute('title', translations[key]);
+                if (this.isBilingual) {
+                    const zhText = zhTranslations[key] || '';
+                    const enText = enTranslations[key] || '';
+                    button.setAttribute('title', zhText + ' / ' + enText);
+                } else {
+                    button.setAttribute('title', translations[key]);
+                }
             }
         });
     }
