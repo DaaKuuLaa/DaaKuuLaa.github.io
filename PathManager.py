@@ -4,7 +4,7 @@ import json
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog, 
-    QLabel, QComboBox, QMenu, QAction, QSplitter, QToolBar
+    QLabel, QComboBox, QMenu, QAction, QSplitter, QToolBar, QHeaderView
 )
 from PyQt5.QtCore import Qt, QMimeData, QSize
 from PyQt5.QtGui import QDrag, QIcon, QFont
@@ -108,9 +108,9 @@ class PathManager(QMainWindow):
         # 左侧目录预览
         self.tree_widget = QTreeWidget()
         self.tree_widget.setHeaderLabels(["名称", "类型", "路径"])
-        self.tree_widget.header().setSectionResizeMode(0, QTreeWidget.ResizeToContents)
-        self.tree_widget.header().setSectionResizeMode(1, QTreeWidget.ResizeToContents)
-        self.tree_widget.header().setSectionResizeMode(2, QTreeWidget.Stretch)
+        self.tree_widget.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tree_widget.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tree_widget.header().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tree_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree_widget.customContextMenuRequested.connect(self.show_context_menu)
         self.tree_widget.setDragEnabled(True)
@@ -131,11 +131,18 @@ class PathManager(QMainWindow):
         self.combo_json.addItems(["work.json", "file.json"])
         self.combo_json.currentTextChanged.connect(self.change_json)
         
+        # 重新加载按钮
+        self.btn_reload = QPushButton("🔄")
+        self.btn_reload.setFixedSize(35, 35)
+        self.btn_reload.setToolTip("重新加载 JSON 文件")
+        self.btn_reload.clicked.connect(self.reload_json)
+        
         self.btn_browse = QPushButton("浏览 JSON 目录")
         self.btn_browse.clicked.connect(self.browse_json_dir)
         
         right_layout.addWidget(self.label_current)
         right_layout.addWidget(self.combo_json)
+        right_layout.addWidget(self.btn_reload)
         right_layout.addWidget(self.btn_browse)
         right_layout.addStretch()
         
@@ -208,13 +215,23 @@ class PathManager(QMainWindow):
         self.update_tree()
     
     def add_files(self):
-        files = QFileDialog.getOpenFileNames(self, "选择文件", 
-                                           os.path.join(self.json_dir, "Work" if self.current_json == "work.json" else "File"))[0]
-        if files:
-            for file_path in files:
-                self.add_file_to_json(file_path)
-            self.save_json()
-            self.update_tree()
+        # 使用 QFileDialog 获取文件和文件夹
+        dialog = QFileDialog()
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, False)
+        
+        # 让用户选择是添加文件还是文件夹
+        choice = dialog.exec_()
+        
+        if choice:
+            # 获取选中的目录
+            directories = dialog.selectedFiles()
+            if directories:
+                for dir_path in directories:
+                    self.add_file_to_json(dir_path)
+                self.save_json()
+                # 不重新渲染，只更新 UI 显示
+                self.refresh_view()
     
     def add_file_to_json(self, file_path):
         relative_path = file_path.replace(self.json_dir + "\\", "").replace("\\", "/")
@@ -354,6 +371,10 @@ class PathManager(QMainWindow):
         except Exception as e:
             print(f"切换 JSON 失败：{e}")
     
+    def reload_json(self):
+        """重新加载当前 JSON 文件"""
+        self.load_json()
+    
     def browse_json_dir(self):
         directory = QFileDialog.getExistingDirectory(self, "选择 JSON 目录")
         if directory:
@@ -440,6 +461,12 @@ class PathManager(QMainWindow):
                 self.selected_items.remove(item)
         
         self.save_json()
+        # 不重新渲染，只移除 UI 中的项
+    
+    def refresh_view(self):
+        """刷新视图，不重新加载整个树"""
+        # 这个方法用于在数据改变后刷新显示
+        pass  # 已经在删除时直接移除了 UI 项，不需要额外操作
     
     def merge_to_index(self, item):
         item_data = item.data(0, Qt.UserRole)
