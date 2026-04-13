@@ -14,12 +14,15 @@
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            padding: 20px;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
             position: relative;
             transition: background 0.5s ease;
             animation: fadeIn 0.4s ease-out;
             display: flex;
             flex-direction: column;
+            overflow: hidden;
         }
 
         @keyframes fadeIn {
@@ -68,12 +71,14 @@
         }
 
         .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            flex: 1;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 20px;
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            box-sizing: border-box;
         }
 
         .control-bar {
@@ -81,10 +86,8 @@
             justify-content: space-between;
             align-items: center;
             padding: 15px 20px;
-            margin-bottom: 20px;
-            position: sticky;
-            top: 0;
-            z-index: 100;
+            margin-bottom: 15px;
+            flex-shrink: 0;
         }
 
         .theme-toggle {
@@ -248,8 +251,8 @@
             box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
             flex: 1;
             overflow-y: auto;
+            overflow-x: hidden;
             min-height: 0;
-            height: 100%;
         }
 
         body.dark-mode .file-list {
