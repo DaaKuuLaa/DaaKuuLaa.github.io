@@ -14,11 +14,12 @@
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            min-height: 100vh;
             padding: 20px;
             position: relative;
             transition: background 0.5s ease;
             animation: fadeIn 0.4s ease-out;
+            display: flex;
+            flex-direction: column;
         }
 
         @keyframes fadeIn {
@@ -69,6 +70,10 @@
         .container {
             max-width: 1000px;
             margin: 0 auto;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
 
         .control-bar {
@@ -241,8 +246,10 @@
             border: 1px solid rgba(255, 255, 255, 0.18);
             padding: 20px;
             box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
-            max-height: 600px;
+            flex: 1;
             overflow-y: auto;
+            min-height: 0;
+            height: 100%;
         }
 
         body.dark-mode .file-list {
@@ -265,6 +272,7 @@
             transition: all 0.3s ease;
             animation: fadeInItem 0.5s ease-out forwards;
             opacity: 0;
+            position: relative;
         }
 
         @keyframes fadeInItem {
@@ -290,6 +298,44 @@
 
         body.dark-mode .file-item:hover {
             background: rgba(255, 255, 255, 0.1);
+        }
+
+        .download-btn {
+            position: absolute;
+            right: 20px;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            opacity: 0;
+            transform: translateX(10px);
+            transition: all 0.3s ease;
+            font-size: 18px;
+            color: #2d3748;
+        }
+
+        .file-item:hover .download-btn {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .download-btn:hover {
+            background: rgba(255, 255, 255, 0.4);
+            transform: scale(1.1);
+        }
+
+        body.dark-mode .download-btn {
+            background: rgba(255, 255, 255, 0.15);
+            color: #f5f7fa;
+        }
+
+        body.dark-mode .download-btn:hover {
+            background: rgba(255, 255, 255, 0.25);
         }
 
         .file-icon {
@@ -604,12 +650,18 @@
                     typeText = '网页';
                 }
                 
+                let downloadBtn = '';
+                if (item.type !== 'folder' && item.type !== 'index') {
+                    downloadBtn = `<div class="download-btn" onclick="downloadFile(event, '${item.path}')">⬇️</div>`;
+                }
+                
                 fileItem.innerHTML = `
                     <div class="file-icon">${icon}</div>
                     <div class="file-info">
                         <div class="file-name">${item.name}</div>
                         <div class="file-type">${typeText}</div>
                     </div>
+                    ${downloadBtn}
                 `;
                 
                 // 处理点击事件
@@ -683,6 +735,45 @@
 
         syncTheme();
         loadFileData();
+
+        // 下载文件
+        function downloadFile(event, path) {
+            event.stopPropagation();
+            event.preventDefault();
+            
+            // 将路径转换为完整 URL
+            let url = path;
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'https://' + url;
+            }
+            
+            // 使用 fetch 下载文件
+            fetch(url)
+                .then(response => response.blob())
+                .then(blob => {
+                    // 从路径中提取文件名
+                    const fileName = path.split('/').pop();
+                    
+                    // 创建下载链接
+                    const downloadUrl = window.URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = downloadUrl;
+                    link.download = fileName;
+                    document.body.appendChild(link);
+                    link.click();
+                    
+                    // 清理
+                    setTimeout(() => {
+                        document.body.removeChild(link);
+                        window.URL.revokeObjectURL(downloadUrl);
+                    }, 100);
+                })
+                .catch(error => {
+                    console.error('下载失败:', error);
+                    // 如果 fetch 失败，尝试直接打开
+                    window.open(url, '_blank');
+                });
+        }
     </script>
 </body>
 </html>
