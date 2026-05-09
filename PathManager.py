@@ -117,6 +117,14 @@ class PathManager(QMainWindow):
         self.tree_widget.setAcceptDrops(True)
         self.tree_widget.setDropIndicatorShown(True)
         self.tree_widget.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self.tree_widget.setDragDropMode(QTreeWidget.InternalMove)
+        
+        # 连接拖拽事件
+        self.tree_widget.dropEvent = self.on_drop
+        self.tree_widget.dragEnterEvent = self.on_drag_enter
+        self.tree_widget.dragMoveEvent = self.on_drag_move
+        self.tree_widget.mousePressEvent = self.on_tree_mouse_press
+        self.tree_widget.mouseMoveEvent = self.on_tree_mouse_move
         
         # 连接选择信号
         self.tree_widget.itemClicked.connect(self.on_item_clicked)
@@ -201,8 +209,10 @@ class PathManager(QMainWindow):
             child_item = QTreeWidgetItem([child["name"], child["type"], child["path"]])
             child_item.setData(0, Qt.UserRole, child)
             parent_item.addChild(child_item)
-            if "projects" in child and child["projects"]:
-                self.add_children(child_item, child["projects"])
+            # index 类型和 folder 类型一样，可以展开显示子项目
+            if child.get("type") in ["folder", "index"]:
+                if "projects" in child and child["projects"]:
+                    self.add_children(child_item, child["projects"])
     
     def clear_json(self):
         self.data = {
@@ -443,6 +453,10 @@ class PathManager(QMainWindow):
             self.last_selected_item = item
     
     def show_context_menu(self, position):
+        # 检查是否有选中的项目
+        has_selection = len(self.selected_items) > 0
+        
+        # 获取右键点击的项目
         item = self.tree_widget.itemAt(position)
         if not item:
             return
@@ -453,9 +467,10 @@ class PathManager(QMainWindow):
         delete_action.triggered.connect(self.delete_selected_items)
         menu.addAction(delete_action)
         
-        if item.data(0, Qt.UserRole)["type"] != "folder":
+        # 只要有选中的项目，就显示"合并为 index 类型"选项
+        if has_selection:
             merge_action = QAction("合并为 index 类型")
-            merge_action.triggered.connect(lambda: self.merge_to_index(item))
+            merge_action.triggered.connect(self.merge_selected_to_index)
             menu.addAction(merge_action)
         
         menu.exec_(self.tree_widget.viewport().mapToGlobal(position))
@@ -488,23 +503,89 @@ class PathManager(QMainWindow):
         # 这个方法用于在数据改变后刷新显示
         pass  # 已经在删除时直接移除了 UI 项，不需要额外操作
     
-    def merge_to_index(self, item):
-        item_data = item.data(0, Qt.UserRole)
-        item_data["type"] = "index"
+    def merge_selected_to_index(self):
+        """合并选中的所有项目为一个 index 类型"""
+        if not self.selected_items:
+            return
         
-        # 查找同目录下的其他文件
-        parent = item.parent()
-        if parent:
-            parent_data = parent.data(0, Qt.UserRole)
-            for p in parent_data["projects"]:
-                if p["name"] != item_data["name"]:
-                    item_data.setdefault("projects", []).append(p)
-            
-            # 从父节点中移除这些文件
-            parent_data["projects"] = [item_data]
+        # 获取第一个选中项作为 index 的基础
+        first_item = self.selected_items[0]
+        first_data = first_item.data(0, Qt.UserRole)
+        parent = first_item.parent()
         
+        if not parent:
+            return  # 根节点不能合并
+        
+        parent_data = parent.data(0, Qt.UserRole)
+        
+        # 收集所有选中项的数据（包括文件夹）
+        merged_projects = []
+        for item in self.selected_items:
+            item_data = item.data(0, Qt.UserRole)
+            merged_projects.append({
+                "name": item_data["name"],
+                "path": item_data["path"],
+                "type": item_data["type"],
+                "projects": item_data.get("projects", [])
+            })
+        
+        # 创建新的 index 项目
+        # index 的 path 应该和父节点一致，因为它是当前目录的索引
+        index_project = {
+            "name": "index",
+            "path": parent_data["path"],
+            "type": "index",
+            "projects": merged_projects
+        }
+        
+        # 从 self.data 中递归删除选中的项目（参考删除操作的实现）
+        names_to_remove = [item.data(0, Qt.UserRole)["name"] for item in self.selected_items]
+        for name in names_to_remove:
+            self.remove_from_data(self.data, name)
+        
+        # 找到父节点在 self.data 中的位置并添加 index 项目
+        self.add_index_to_parent(self.data, parent_data["name"], index_project)
+        
+        # 保存 JSON
         self.save_json()
-        self.update_tree()
+        
+        # 直接更新 UI，不重新渲染整个树（类似删除操作）
+        # 先移除所有选中的项目
+        for item in self.selected_items[:]:
+            parent.removeChild(item)
+        
+        # 创建新的 index 项目项
+        index_item = QTreeWidgetItem([index_project["name"], index_project["type"], index_project["path"]])
+        index_item.setData(0, Qt.UserRole, index_project)
+        parent.addChild(index_item)
+        
+        # 添加子项目（如果有）
+        if merged_projects:
+            for child_project in merged_projects:
+                child_item = QTreeWidgetItem([child_project["name"], child_project["type"], child_project["path"]])
+                child_item.setData(0, Qt.UserRole, child_project)
+                index_item.addChild(child_item)
+        
+        # 展开 index 项
+        index_item.setExpanded(True)
+        
+        # 清空选择
+        self.selected_items = []
+        self.last_selected_item = None
+    
+    def add_index_to_parent(self, data, parent_name, index_project):
+        """递归找到指定父节点并添加 index 项目"""
+        if "projects" in data:
+            for project in data["projects"]:
+                if project["name"] == parent_name:
+                    project.setdefault("projects", []).append(index_project)
+                    return
+                if "projects" in project:
+                    self.add_index_to_parent(project, parent_name, index_project)
+    
+    def merge_to_index(self, item):
+        """保留旧函数作为兼容"""
+        self.merge_selected_to_index()
     
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Delete:
@@ -515,26 +596,121 @@ class PathManager(QMainWindow):
             self.selected_items = []
             self.last_selected_item = None
     
-    def mousePressEvent(self, event):
+    def on_tree_mouse_press(self, event):
+        """处理树形控件的鼠标按下事件"""
         if event.button() == Qt.LeftButton:
             item = self.tree_widget.itemAt(event.pos())
             if item:
                 self.drag_start_position = event.pos()
+        # 调用原始鼠标按下事件处理
+        QTreeWidget.mousePressEvent(self.tree_widget, event)
     
-    def mouseMoveEvent(self, event):
-        if not (event.buttons() & Qt.LeftButton):
-            return
-        if (event.pos() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
+    def on_tree_mouse_move(self, event):
+        """处理树形控件的鼠标移动事件 - 触发拖拽"""
+        if event.buttons() & Qt.LeftButton:
+            if hasattr(self, 'drag_start_position'):
+                if (event.pos() - self.drag_start_position).manhattanLength() >= QApplication.startDragDistance():
+                    item = self.tree_widget.itemAt(self.drag_start_position)
+                    if item:
+                        mime_data = QMimeData()
+                        # 使用唯一标识符（路径）而不是名称
+                        item_data = item.data(0, Qt.UserRole)
+                        mime_data.setText(item_data["path"])
+                        
+                        drag = QDrag(self.tree_widget)
+                        drag.setMimeData(mime_data)
+                        drag.exec_(Qt.MoveAction)
+                        return
+        # 调用原始鼠标移动事件处理
+        QTreeWidget.mouseMoveEvent(self.tree_widget, event)
+    
+    def on_drag_enter(self, event):
+        """处理拖拽进入事件"""
+        if event.source() == self.tree_widget:
+            event.acceptProposedAction()
+    
+    def on_drag_move(self, event):
+        """处理拖拽移动事件"""
+        if event.source() == self.tree_widget:
+            event.acceptProposedAction()
+    
+    def on_drop(self, event):
+        """处理放置事件 - 实现移动功能"""
+        source_item = self.tree_widget.itemAt(event.pos() - self.tree_widget.viewport().pos())
+        
+        # 如果没有目标项，尝试获取根节点
+        if not source_item:
+            source_item = self.tree_widget.topLevelItem(0)
+        
+        if not source_item:
             return
         
-        item = self.tree_widget.itemAt(self.drag_start_position)
-        if item:
-            mime_data = QMimeData()
-            mime_data.setText(item.data(0, Qt.UserRole)["name"])
-            
-            drag = QDrag(self)
-            drag.setMimeData(mime_data)
-            drag.exec_(Qt.CopyAction | Qt.MoveAction)
+        source_data = source_item.data(0, Qt.UserRole)
+        
+        # 获取被拖拽的项目（从 mimeData 中获取）
+        mime_data = event.mimeData()
+        if not mime_data.hasText():
+            return
+        
+        dragged_path = mime_data.text()
+        
+        # 找到被拖拽的项目在 self.data 中的位置
+        dragged_item_data = self.find_item_by_path(self.data, dragged_path)
+        
+        if not dragged_item_data:
+            return
+        
+        # 检查是否是移动到自己或自己的子节点
+        if self.is_child_of(dragged_item_data, source_data):
+            return
+        
+        # 从原位置删除
+        self.remove_from_data(self.data, dragged_item_data["name"])
+        
+        # 添加到新位置
+        source_data.setdefault("projects", []).append(dragged_item_data)
+        
+        # 保存 JSON
+        self.save_json()
+        
+        # 刷新 UI
+        self.update_tree()
+        
+        event.acceptProposedAction()
+    
+    def find_item_by_path(self, data, path):
+        """递归在 data 中查找指定路径的项目"""
+        if data.get("path") == path:
+            return data
+        if "projects" in data:
+            for project in data["projects"]:
+                if project.get("path") == path:
+                    return project
+                result = self.find_item_by_path(project, path)
+                if result:
+                    return result
+        return None
+    
+    def find_item_in_data(self, data, name):
+        """递归在 data 中查找指定名称的项目"""
+        if "projects" in data:
+            for project in data["projects"]:
+                if project["name"] == name:
+                    return project
+                result = self.find_item_in_data(project, name)
+                if result:
+                    return result
+        return None
+    
+    def is_child_of(self, child_data, parent_data):
+        """检查 child_data 是否是 parent_data 的子节点"""
+        if child_data == parent_data:
+            return True
+        if "projects" in parent_data:
+            for project in parent_data["projects"]:
+                if self.is_child_of(child_data, project):
+                    return True
+        return False
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
