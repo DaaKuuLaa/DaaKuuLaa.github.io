@@ -498,6 +498,22 @@
             letter-spacing: 2px;
         }
 
+        .game-link {
+            text-decoration: none;
+            display: block;
+        }
+
+        .play-now {
+            color: rgba(72, 209, 204, 0.9) !important;
+            border-color: rgba(72, 209, 204, 0.3) !important;
+            background: rgba(72, 209, 204, 0.08) !important;
+        }
+
+        .game-link:hover .play-now {
+            background: rgba(72, 209, 204, 0.18) !important;
+            color: #48dbfb !important;
+        }
+
         .about-cards {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -740,11 +756,11 @@
                     </div>
 
                     <div class="games-grid">
-                        <div class="game-placeholder">
+                        <a href="games/monkeychess/index.html" class="game-placeholder game-link">
                             <span class="game-icon">🎲</span>
-                            <h4>棋盘策略</h4>
-                            <span class="coming-soon">COMING SOON</span>
-                        </div>
+                            <h4>猴子棋</h4>
+                            <span class="coming-soon play-now">开始游戏</span>
+                        </a>
                         <div class="game-placeholder">
                             <span class="game-icon">⚔️</span>
                             <h4>角色扮演</h4>
