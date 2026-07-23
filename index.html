@@ -4,6 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DaaKuuLaa - 个人主页</title>
+    <link rel="icon" href="avatar.png">
+    <script>
+        (function () {
+            try {
+                if (localStorage.getItem('theme') === 'dark') {
+                    document.documentElement.classList.add('dark-mode');
+                }
+            } catch (e) { }
+        })();
+    </script>
     <style>
         * {
             margin: 0;
@@ -40,7 +50,7 @@
             z-index: -1;
         }
 
-        body.dark-mode::before {
+        html.dark-mode body::before {
             opacity: 1;
         }
 
@@ -94,7 +104,12 @@
             transform: translateY(-2px);
         }
 
-        body.dark-mode .theme-toggle {
+        .theme-toggle:focus-visible {
+            outline: 2px solid #4299e1;
+            outline-offset: 2px;
+        }
+
+        html.dark-mode .theme-toggle {
             color: #f5f7fa;
         }
 
@@ -155,12 +170,17 @@
             background: rgba(255, 255, 255, 0.35);
         }
 
-        body.dark-mode .card {
+        .card:focus-visible {
+            outline: 2px solid #4299e1;
+            outline-offset: 2px;
+        }
+
+        html.dark-mode .card {
             background: rgba(255, 255, 255, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        body.dark-mode .card:hover {
+        html.dark-mode .card:hover {
             background: rgba(255, 255, 255, 0.15);
         }
 
@@ -189,7 +209,7 @@
             text-align: center;
         }
 
-        body.dark-mode .username {
+        html.dark-mode .username {
             color: #f5f7fa;
         }
 
@@ -200,7 +220,7 @@
             line-height: 1.4;
         }
 
-        body.dark-mode .bio {
+        html.dark-mode .bio {
             color: #a0aec0;
         }
 
@@ -221,7 +241,7 @@
             margin-bottom: 3px;
         }
 
-        body.dark-mode .date-year {
+        html.dark-mode .date-year {
             color: #a0aec0;
         }
 
@@ -232,7 +252,7 @@
             line-height: 1;
         }
 
-        body.dark-mode .date-day {
+        html.dark-mode .date-day {
             color: #f5f7fa;
         }
 
@@ -242,7 +262,7 @@
             margin-top: 3px;
         }
 
-        body.dark-mode .date-lunar {
+        html.dark-mode .date-lunar {
             color: #718096;
         }
 
@@ -263,7 +283,7 @@
             color: #2d3748;
         }
 
-        body.dark-mode .card-title {
+        html.dark-mode .card-title {
             color: #f5f7fa;
         }
 
@@ -324,19 +344,20 @@
 <body>
     <div class="container">
         <div class="control-bar">
-            <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn">明亮模式</button>
+            <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" aria-label="切换明暗主题">明亮模式</button>
         </div>
         <div class="main-layout">
             <div class="left-panel">
-                <a href="https://github.com/DaaKuuLaa/" target="_blank" class="card profile-card">
-                    <img src="assets/avatar.jpg" alt="DaaKuuLaa" class="avatar">
+                <a href="https://github.com/DaaKuuLaa/" target="_blank" rel="noopener" class="card profile-card" aria-label="访问 DaaKuuLaa 的 GitHub 主页">
+                    <img src="assets/avatar.jpg" alt="DaaKuuLaa 头像" class="avatar" id="avatar"
+                         onerror="this.onerror=null;this.src='https://github.com/DaaKuuLaa.png';">
                     <div class="username">DaaKuuLaa</div>
-                    <div class="bio">Dare Kindle Light‌</div>
+                    <div class="bio">Dare Kindle Light</div>
                 </a>
             </div>
             <div class="right-panel">
                 <div class="right-top">
-                    <div class="card date-card">
+                    <div class="card date-card" aria-live="polite">
                         <div class="date-content">
                             <div class="date-year" id="date-year-month"></div>
                             <div class="date-day" id="date-day"></div>
@@ -345,12 +366,12 @@
                     </div>
                 </div>
                 <div class="right-bottom">
-                    <a href="file.html" class="card file-card">
-                        <div class="card-icon">📁</div>
+                    <a href="file.html" class="card file-card" aria-label="进入文件管理器">
+                        <div class="card-icon" aria-hidden="true">📁</div>
                         <div class="card-title">文件</div>
                     </a>
-                    <a href="work.html" class="card work-card">
-                        <div class="card-icon">💼</div>
+                    <a href="work.html" class="card work-card" aria-label="进入项目管理工作">
+                        <div class="card-icon" aria-hidden="true">💼</div>
                         <div class="card-title">工作</div>
                     </a>
                 </div>
@@ -358,54 +379,40 @@
         </div>
     </div>
 
+    <script src="assets/lunar.js"></script>
     <script>
         function toggleTheme() {
-            const body = document.body;
+            const root = document.documentElement;
             const toggle = document.querySelector('.theme-toggle');
-            body.classList.toggle('dark-mode');
-            
-            const isDark = body.classList.contains('dark-mode');
-            toggle.textContent = isDark ? '黑暗模式' : '明亮模式';
-            localStorage.setItem('theme', isDark ? 'dark' : 'light');
-        }
+            root.classList.toggle('dark-mode');
 
-        function syncTheme() {
-            const theme = localStorage.getItem('theme');
-            const body = document.body;
-            const toggle = document.querySelector('.theme-toggle');
-            
-            if (theme === 'dark') {
-                body.classList.add('dark-mode');
-                toggle.textContent = '黑暗模式';
-            } else {
-                body.classList.remove('dark-mode');
-                toggle.textContent = '明亮模式';
-            }
+            const isDark = root.classList.contains('dark-mode');
+            toggle.textContent = isDark ? '黑暗模式' : '明亮模式';
+            try {
+                localStorage.setItem('theme', isDark ? 'dark' : 'light');
+            } catch (e) { }
         }
 
         document.addEventListener('keydown', function(e) {
-            if (e.key === 'd' || e.key === 'D') {
-                if (!e.target.matches('input, textarea')) {
-                    toggleTheme();
-                }
+            if ((e.key === 'd' || e.key === 'D') && !e.target.matches('input, textarea')) {
+                toggleTheme();
             }
         });
 
-        const lunarDays = ['初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十',
-                         '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十',
-                         '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十'];
-        const lunarMonths = ['正月', '二月', '三月', '四月', '五月', '六月',
-                           '七月', '八月', '九月', '十月', '冬月', '腊月'];
-        
-        function getLunarDate(date) {
-            const baseDate = new Date(2000, 0, 31);
-            const diff = date - baseDate;
-            const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-            
-            const lunarDayIndex = Math.abs(days % 30);
-            const lunarMonthIndex = Math.abs(Math.floor(days / 30) % 12);
-            
-            return `${lunarMonths[lunarMonthIndex]}${lunarDays[lunarDayIndex]}`;
+        function updateThemeToggleText() {
+            const isDark = document.documentElement.classList.contains('dark-mode');
+            const toggle = document.querySelector('.theme-toggle');
+            if (toggle) toggle.textContent = isDark ? '黑暗模式' : '明亮模式';
+        }
+
+        function getLunarText(date) {
+            try {
+                if (typeof Lunar === 'undefined') return '';
+                const lunar = Lunar.fromDate(date);
+                return lunar.getYearInGanZhi() + '年 ' + lunar.getMonthInChinese() + '月' + lunar.getDayInChinese();
+            } catch (e) {
+                return '';
+            }
         }
 
         function updateDate() {
@@ -413,13 +420,19 @@
             const year = now.getFullYear();
             const month = now.getMonth() + 1;
             const day = now.getDate();
-            
-            document.getElementById('date-year-month').textContent = `${year}年${month}月`;
+
+            document.getElementById('date-year-month').textContent = year + '年' + month + '月';
             document.getElementById('date-day').textContent = day;
-            document.getElementById('date-lunar').textContent = getLunarDate(now);
+            const lunarText = getLunarText(now);
+            const lunarEl = document.getElementById('date-lunar');
+            if (lunarText) {
+                lunarEl.textContent = lunarText;
+            } else {
+                lunarEl.style.display = 'none';
+            }
         }
 
-        syncTheme();
+        updateThemeToggleText();
         updateDate();
     </script>
 </body>
