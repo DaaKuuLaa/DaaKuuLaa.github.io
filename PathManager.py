@@ -13,7 +13,10 @@ class PathManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_json = "work.json"
-        self.json_dir = "a:\\DKL\\DaaKuuLaa.github.io"
+        if getattr(sys, 'frozen', False):
+            self.json_dir = os.path.dirname(sys.executable)
+        else:
+            self.json_dir = os.path.dirname(os.path.abspath(__file__))
         self.selected_items = []
         self.last_selected_item = None
         self.initUI()
@@ -240,8 +243,7 @@ class PathManager(QMainWindow):
                 for dir_path in directories:
                     self.add_file_to_json(dir_path)
                 self.save_json()
-                # 不重新渲染，只更新 UI 显示
-                self.refresh_view()
+                self.update_tree()
     
     def add_file_to_json(self, file_path):
         # 获取相对路径（从 json_dir 开始）
@@ -476,32 +478,26 @@ class PathManager(QMainWindow):
         menu.exec_(self.tree_widget.viewport().mapToGlobal(position))
     
     def delete_selected_items(self):
+        count = 0
         for item in self.selected_items[:]:
             parent = item.parent()
             if parent:
-                parent_data = parent.data(0, Qt.UserRole)
                 item_data = item.data(0, Qt.UserRole)
-                # 直接从 self.data 中删除，而不是只修改 parent_data
-                self.remove_from_data(self.data, item_data["name"])
+                self.remove_from_data(self.data, item_data["path"])
                 parent.removeChild(item)
                 self.selected_items.remove(item)
+                count += 1
         
         self.save_json()
-        print(f"已保存 JSON，删除了 {len(self.selected_items)} 个项目")
+        print(f"已保存 JSON，删除了 {count} 个项目")
     
-    def remove_from_data(self, data, name):
-        """递归从 data 中删除指定名称的项目"""
+    def remove_from_data(self, data, target_path):
+        """递归从 data 中删除指定 path 的项目（path 在树中唯一）"""
         if "projects" in data:
-            data["projects"] = [p for p in data["projects"] if p["name"] != name]
-            # 递归检查子项目
+            data["projects"] = [p for p in data["projects"] if p.get("path") != target_path]
             for project in data["projects"]:
                 if "projects" in project:
-                    self.remove_from_data(project, name)
-    
-    def refresh_view(self):
-        """刷新视图，不重新加载整个树"""
-        # 这个方法用于在数据改变后刷新显示
-        pass  # 已经在删除时直接移除了 UI 项，不需要额外操作
+                    self.remove_from_data(project, target_path)
     
     def merge_selected_to_index(self):
         """合并选中的所有项目为一个 index 类型"""
@@ -539,9 +535,9 @@ class PathManager(QMainWindow):
         }
         
         # 从 self.data 中递归删除选中的项目（参考删除操作的实现）
-        names_to_remove = [item.data(0, Qt.UserRole)["name"] for item in self.selected_items]
-        for name in names_to_remove:
-            self.remove_from_data(self.data, name)
+        paths_to_remove = [item.data(0, Qt.UserRole)["path"] for item in self.selected_items]
+        for path in paths_to_remove:
+            self.remove_from_data(self.data, path)
         
         # 找到父节点在 self.data 中的位置并添加 index 项目
         self.add_index_to_parent(self.data, parent_data["name"], index_project)
@@ -582,10 +578,6 @@ class PathManager(QMainWindow):
                     return
                 if "projects" in project:
                     self.add_index_to_parent(project, parent_name, index_project)
-    
-    def merge_to_index(self, item):
-        """保留旧函数作为兼容"""
-        self.merge_selected_to_index()
     
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Delete:
@@ -665,7 +657,7 @@ class PathManager(QMainWindow):
             return
         
         # 从原位置删除
-        self.remove_from_data(self.data, dragged_item_data["name"])
+        self.remove_from_data(self.data, dragged_item_data["path"])
         
         # 添加到新位置
         source_data.setdefault("projects", []).append(dragged_item_data)
@@ -687,17 +679,6 @@ class PathManager(QMainWindow):
                 if project.get("path") == path:
                     return project
                 result = self.find_item_by_path(project, path)
-                if result:
-                    return result
-        return None
-    
-    def find_item_in_data(self, data, name):
-        """递归在 data 中查找指定名称的项目"""
-        if "projects" in data:
-            for project in data["projects"]:
-                if project["name"] == name:
-                    return project
-                result = self.find_item_in_data(project, name)
                 if result:
                     return result
         return None
