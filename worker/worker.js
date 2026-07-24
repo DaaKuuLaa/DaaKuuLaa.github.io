@@ -12,7 +12,11 @@
  *
  * 路由：
  *   POST /upload   multipart/form-data  字段: file, dir(File 或 Work), subdirs(可选，相对子目录路径)
+ *   POST /delete   application/json     字段: { path: 'DaaKuuLaa.github.io/File/xxx.pdf', confirm: true }
  *   Authorization: <上传密码原文>
+ *
+ * /upload 与 /delete 成功时在响应体 index 字段中返回最新的 file.json / work.json 完整对象，
+ * 供前端直接缓存与重渲染，避免等 GitHub 镜像延迟。
  */
 
 const REPO_OWNER = 'DaaKuuLaa';
@@ -150,6 +154,29 @@ function findProjectsArray(rootNode, segments) {
   return node.projects;
 }
 
+// 在 JSON 树里按完整 path 删除节点；返回 true 表示已删除
+function removeNodeByPath(rootNode, targetPath) {
+  // targetPath 形如 "DaaKuuLaa.github.io/File/Sub/foo.pdf"
+  // 去掉 SERVICE_PREFIX 后按 segments 沿着 projects 下钻，最后 splice 掉
+  let rel = targetPath;
+  if (rel.startsWith(SERVICE_PREFIX)) rel = rel.slice(SERVICE_PREFIX.length);
+  const segs = rel.split('/').filter(Boolean);
+  if (segs.length < 2) return false; // 至少要有 File/Work + 文件名
+  // root 节点 name 应等于 segs[0]；下钻到 segs[length-2] 的 projects，删 segs[length-1]
+  let node = rootNode;
+  if (node.name !== segs[0]) return false;
+  for (let i = 1; i < segs.length - 1; i++) {
+    const found = (node.projects || []).find(p => p.name === segs[i]);
+    if (!found) return false;
+    node = found;
+  }
+  if (!node.projects) return false;
+  const idx = node.projects.findIndex(p => p.name === segs[segs.length - 1]);
+  if (idx < 0) return false;
+  node.projects.splice(idx, 1);
+  return true;
+}
+
 // ---------- 主处理 ----------
 
 async function handleUpload(request, env) {
@@ -266,7 +293,116 @@ async function handleUpload(request, env) {
     return json({ ok: true, partial: true, path: fullTargetPath, warning: '文件已提交但索引更新失败' });
   }
 
-  return json({ ok: true, path: fullTargetPath, name: newEntry.name, dir });
+  // 读取最终索引回传给前端（避免前端等 GitHub 镜像延迟）
+  const finalJson = await readJson(env, jsonPath);
+  return json({
+    ok: true,
+    path: fullTargetPath,
+    name: newEntry.name,
+    dir,
+    index: finalJson ? finalJson.json : null
+  });
+}
+
+// ---------- 删除处理 ----------
+
+// 仅允许在 File/ 或 Work/ 根下删除；解析 path 为 GitHub contents 内部路径与 JSON 索引
+// 用户传的 path 是 "DaaKuuLaa.github.io/<dir>/<...>/name"
+function parseTargetPath(userPath) {
+  if (typeof userPath !== 'string' || userPath.length > 512) return null;
+  let rel = userPath;
+  if (rel.startsWith(SERVICE_PREFIX)) rel = rel.slice(SERVICE_PREFIX.length);
+  // 仅允许形如 File/... 或 Work/...
+  const m = rel.match(/^(File|Work)\/(?:[^\/]+\/)*[^\/]+$/);
+  if (!m) return null;
+  const segs = rel.split('/').filter(Boolean);
+  if (segs.some(s => s === '..' || s === '.' || s.includes('\\'))) return null;
+  return { rel, dir: segs[0], name: segs[segs.length - 1] };
+}
+
+async function handleDelete(request, env) {
+  if (!env.GITHUB_PAT || !env.UPLOAD_PASSWORD_HASH) {
+    return json({ ok: false, error: '服务端未配置 Secret' }, 500);
+  }
+
+  // 1. 密码验证（与 upload 一致）
+  const pwd = request.headers.get('Authorization') || '';
+  const pwdHash = await sha256Hex(pwd);
+  if (pwdHash.length !== env.UPLOAD_PASSWORD_HASH.length ||
+      pwdHash !== env.UPLOAD_PASSWORD_HASH) {
+    return json({ ok: false, error: '密码错误' }, 401);
+  }
+
+  // 2. 解析 body
+  let body;
+  try { body = await request.json(); } catch (e) {
+    return json({ ok: false, error: '请求体解析失败' }, 400);
+  }
+  const parsed = parseTargetPath(body && body.path);
+  if (!parsed) {
+    return json({ ok: false, error: '路径非法' }, 400);
+  }
+  const confirmFlag = !!(body && body.confirm);
+  // 二次确认对前端做，Worker 仅做软校验，提供 confirm !== true → 提示前端要做二次确认
+  if (!confirmFlag) {
+    return json({ ok: false, error: '需要二次确认', needConfirm: true }, 400);
+  }
+
+  // 3. 拿 GitHub 文件 sha（删 Contents API 必须带 sha）
+  const rel = parsed.rel;
+  const getRes = await ghApi(env, 'GET', rel, undefined);
+  if (!getRes.ok) {
+    const ghMsg = (getRes.data && getRes.data.message) || ('HTTP ' + getRes.status);
+    return json({ ok: false, error: '获取文件信息失败: ' + ghMsg, ghStatus: getRes.status }, 404);
+  }
+  const sha = getRes.data && getRes.data.sha;
+  if (!sha) {
+    return json({ ok: false, error: '无法获取文件 sha' }, 500);
+  }
+
+  // 4. 删除文件（GitHub Contents DELETE 接口）
+  const delUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${rel}`;
+  const delRes = await fetch(delUrl, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': `Bearer ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Accept-Encoding': 'identity',
+      'User-Agent': 'daakuulaa-upload-worker',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ message: `Web-delete: ${parsed.name}`, sha, branch: REPO_BRANCH })
+  });
+  if (!delRes.ok) {
+    let d = null;
+    try { d = await delRes.json(); } catch (e) { }
+    const ghMsg = (d && d.message) || ('HTTP ' + delRes.status);
+    return json({ ok: false, error: '删除文件失败: ' + ghMsg, ghStatus: delRes.status, ghData: d }, 502);
+  }
+
+  // 5. 更新 JSON 索引（删除节点）
+  const jsonPath = parsed.dir === 'Work' ? 'work.json' : 'file.json';
+  let updated = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const cur = await readJson(env, jsonPath);
+    if (!cur) { updated = true; break; } // 索引不存在视为已一致
+    const removed = removeNodeByPath(cur.json, SERVICE_PREFIX + rel);
+    if (!removed) { updated = true; break; } // 节点不存在视为已一致
+    const ok = await writeJsonWithRetry(env, jsonPath, cur.json, `Index: del ${parsed.name}`);
+    if (ok) { updated = true; break; }
+  }
+
+  // 6. 回读最新索引一并返回
+  const finalJson = await readJson(env, jsonPath);
+  return json({
+    ok: true,
+    path: SERVICE_PREFIX + rel,
+    name: parsed.name,
+    dir: parsed.dir,
+    partial: !updated,
+    index: finalJson ? finalJson.json : null
+  });
 }
 
 function autoCreatePath(root, segs) {
@@ -293,9 +429,23 @@ async function handlePreflight(request) {
     headers: {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Authorization'
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type'
     }
   });
+}
+
+// 统一 CORS 头后处理 + 异常包裹
+async function withCors(handler, request, env) {
+  try {
+    const res = await handler(request, env);
+    const c = res.clone();
+    return new Response(c.body, {
+      status: c.status,
+      headers: { ...Object.fromEntries(c.headers), 'Access-Control-Allow-Origin': '*' }
+    });
+  } catch (err) {
+    return json({ ok: false, error: '服务端异常', detail: String(err && err.message || err) }, 500);
+  }
 }
 
 export default {
@@ -304,18 +454,13 @@ export default {
     if (request.method === 'OPTIONS') return handlePreflight(request);
 
     const url = new URL(request.url);
+    // 上传
     if (request.method === 'POST' && url.pathname === '/upload') {
-      try {
-        const res = await handleUpload(request, env);
-        // 统一加 CORS 头
-        const c = res.clone();
-        return new Response(c.body, {
-          status: c.status,
-          headers: { ...Object.fromEntries(c.headers), 'Access-Control-Allow-Origin': '*' }
-        });
-      } catch (err) {
-        return json({ ok: false, error: '服务端异常', detail: String(err) }, 500);
-      }
+      return withCors(handleUpload, request, env);
+    }
+    // 删除
+    if (request.method === 'POST' && url.pathname === '/delete') {
+      return withCors(handleDelete, request, env);
     }
     return json({ ok: false, error: 'Not Found' }, 404);
   }
