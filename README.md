@@ -67,53 +67,48 @@ DaaKuuLaa.github.io/
 pyinstaller --onefile --windowed --name PathManager PathManager.py
 ```
 
-### 网页上传功能（Cloudflare Worker）
+### 网页上传与管理功能（Cloudflare Worker）
 
-文件管理器和项目管理工作都支持在网页上直接上传文件到当前的目录（右键 → 添加文件）。
+文件管理器和项目管理器支持在网页上直接上传/删除文件（右键菜单）。
 后端使用 Cloudflare Worker，PAT 与密码哈希都保存在 Worker Secret 中，源码不含敏感信息。
 
-**初次部署：**
+**端点：**
+- `POST /upload` — 上传文件（multipart/form-data，字段 `file`、`dir`、`subdirs`）
+- `POST /delete` — 删除文件（JSON body：`{ path, confirm: true }`）
 
-1. 安装 Wrangler（一次性）：
-```bash
-npm install -g wrangler
-wrangler login   # 浏览器授权 Cloudflare
-```
+两个端点成功时都会在 `index` 字段返回最新的 `file.json` / `work.json` 完整对象，
+前端直接用其重渲染与缓存，避免等 GitHub Pages 镜像延迟。
 
-2. 在 `worker/` 目录下部署：
-```bash
-cd worker
-wrangler deploy
-```
-部署后得到形如 `https://daakuulaa-upload.<你的子域>.workers.dev` 的地址。
+**部署域：** 默认 `workers.dev` 在国内不可达，Worker 已绑定自定义域
+`https://upload.dkl.cc.cd`（域名需托管到 Cloudflare 才能绑定）。
 
-3. 注入两个 Secret：
-
-```bash
-# GitHub 细粒度 PAT（仅本仓库 Contents: read/write + Metadata: read）
-wrangler secret put GITHUB_PAT
-
-# 上传密码的 SHA-256 hex（小写）
-# 生成方式：echo -n "你的密码" | sha256sum
-wrangler secret put UPLOAD_PASSWORD_HASH
-```
-
-4. 把得到的 Worker URL 填入 `file.html` 和 `work.html` 中的
-   `EXPLORER_CONFIG.uploadUrl`。
+初次部署 `wrangler deploy` 后将 `file.html` / `work.html` 中 `uploadUrl` 改为你的域名。
 
 **安全设计：**
 - PAT 与密码哈希保存在 Cloudflare Secret，不出现在任何源码或前端
 - PAT 仅授予 `Contents: read/write`，无 Administration / Workflows 权限
-- 文件名加时间戳前缀，永不覆盖现有文件
+- 同名文件自动加时间戳前缀避免覆盖，无同名则保留原名
 - 单文件上限 50MB（超限请用 PathManager 本地添加）
-- 仅可往 `File/` 或 `Work/` 写入，路径在服务端强制，前端无法绕过
-- 上传后自动在对应的 `file.json` / `work.json` 追加索引条目（带 sha 重试）
+- 仅可往 `File/` 或 `Work/` 写入与删除，路径在服务端强制校验，前端无法绕过
+- 删除需输入密码 + 二次确认，Worker 强制要求 `confirm: true` 才执行
+- 上传/删除后自动更新对应的 `file.json` / `work.json` 索引（带 sha 重试）
 
 **修改上传密码：**
 ```bash
 echo -n "新密码" | sha256sum   # 拿到新 hash
 wrangler secret put UPLOAD_PASSWORD_HASH   # 重新注入
 ```
+
+**快捷键：**
+- `R` — 刷新当前目录（保留路径，重新拉取仓库 JSON）
+- 连续点三下 `R` → 强制清缓存，从远端拉取（绕过本地缓存）
+- `D` — 切换明暗主题
+- `Backspace` — 返回上层
+- `Esc` — 返回主页
+
+**本地缓存策略：**
+页面加载时优先用 localStorage 缓存渲染，后台用 `fetch` 拉取仓库 JSON；
+若仓库更新则覆盖缓存。`R` ×3 清缓存强制同步。缓存仅含 JSON 数据，不含密码或 Token。
 
 ## 技术栈
 
