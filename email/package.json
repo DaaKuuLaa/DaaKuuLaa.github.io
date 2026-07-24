@@ -1,0 +1,18 @@
+{
+  "name": "daakuulaa-email",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute daakuulaa-email --file=schema.sql",
+    "db:admin": "wrangler d1 execute daakuulaa-email --command=\"INSERT OR IGNORE INTO users (username, password_hash) VALUES ('dkl', '$ADMIN_PASSWORD_HASH')\""
+  },
+  "dependencies": {
+    "postal-mime": "^2.4.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

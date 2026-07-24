@@ -1,0 +1,4 @@
+# Email Worker
+.wrangler/
+node_modules/
+.dev.vars
