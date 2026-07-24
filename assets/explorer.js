@@ -442,6 +442,234 @@
     }
     window.downloadFile = downloadFile;
 
+    // ====== 上传入口（右键菜单 + 模态框） ======
+    const UPLOAD_WORKER_URL = CFG.uploadUrl || '';  // 通过 EXPLORER_CONFIG.uploadUrl 配置
+    let modalOpen = false;
+
+    function escapeDialog(e) {
+        if (e.key === 'Escape' && modalOpen) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            closeModal();
+        }
+    }
+
+    let ctxMenuCleanup = null;
+
+    function showContextMenu(x, y) {
+        // 关闭已有菜单、解绑旧监听
+        if (ctxMenuCleanup) ctxMenuCleanup();
+        document.querySelectorAll('.context-menu').forEach(m => m.remove());
+
+        const menu = document.createElement('div');
+        menu.className = 'context-menu';
+        menu.setAttribute('role', 'menu');
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+
+        const item = document.createElement('div');
+        item.className = 'context-menu-item';
+        item.setAttribute('role', 'menuitem');
+        item.setAttribute('tabindex', '0');
+        item.innerHTML = '<span aria-hidden="true">➕</span>添加文件';
+        item.onclick = () => { if (ctxMenuCleanup) ctxMenuCleanup(); openUploadDialog(); };
+        item.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (ctxMenuCleanup) ctxMenuCleanup(); openUploadDialog(); } };
+        menu.appendChild(item);
+
+        document.body.appendChild(menu);
+        // 防止超出视口
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 8) + 'px';
+        if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 8) + 'px';
+
+        // 绑定关闭行为：任意点击 / 新右键
+        function onMousedown(ev) {
+            const insideMenu = menu.contains(ev.target) || ev.target.closest('.modal-overlay');
+            if (!insideMenu) {
+                cleanup();
+            }
+        }
+        function onNewContextmenu(ev) {
+            cleanup();
+            // 如果在 .file-list 内右键，重新弹出菜单
+            if (document.getElementById('file-list').contains(ev.target)) {
+                setTimeout(() => showContextMenu(ev.clientX, ev.clientY), 0);
+            }
+        }
+        function cleanup() {
+            ctxMenuCleanup = null;
+            document.removeEventListener('mousedown', onMousedown, true);
+            document.removeEventListener('contextmenu', onNewContextmenu, true);
+            document.querySelectorAll('.context-menu').forEach(m => m.remove());
+        }
+        ctxMenuCleanup = cleanup;
+
+        setTimeout(() => {
+            document.addEventListener('mousedown', onMousedown, true);
+            document.addEventListener('contextmenu', onNewContextmenu, true);
+        }, 0);
+    }
+
+    function openUploadDialog() {
+        if (!UPLOAD_WORKER_URL) {
+            showErrorBanner('未配置上传服务地址');
+            return;
+        }
+        if (modalOpen) return;
+        modalOpen = true;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-label', '上传文件');
+
+        const dialog = document.createElement('div');
+        dialog.className = 'modal-dialog';
+
+        // header
+        const header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = '<span aria-hidden="true">📤</span> 上传文件';
+        dialog.appendChild(header);
+
+        // body
+        const body = document.createElement('div');
+        body.className = 'modal-body';
+
+        const pwdRow = document.createElement('div');
+        pwdRow.className = 'form-row';
+        pwdRow.innerHTML = '<label for="up-pwd">密码</label>';
+        const pwdInput = document.createElement('input');
+        pwdInput.type = 'password';
+        pwdInput.id = 'up-pwd';
+        pwdInput.autocomplete = 'off';
+        pwdRow.appendChild(pwdInput);
+        body.appendChild(pwdRow);
+
+        const fileRow = document.createElement('div');
+        fileRow.className = 'form-row';
+        fileRow.innerHTML = '<label>文件</label>';
+        const pickRow = document.createElement('div');
+        pickRow.className = 'file-pick-row';
+        const pathBox = document.createElement('div');
+        pathBox.className = 'file-path';
+        pathBox.textContent = '未选择文件';
+        const browseBtn = document.createElement('button');
+        browseBtn.type = 'button';
+        browseBtn.className = 'btn';
+        browseBtn.textContent = '浏览';
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.style.display = 'none';
+        browseBtn.onclick = () => fileInput.click();
+        fileInput.onchange = () => {
+            if (fileInput.files && fileInput.files[0]) {
+                pathBox.textContent = fileInput.files[0].name;
+                pathBox.title = fileInput.files[0].name;
+            } else {
+                pathBox.textContent = '未选择文件';
+            }
+        };
+        pickRow.appendChild(pathBox);
+        pickRow.appendChild(browseBtn);
+        pickRow.appendChild(fileInput);
+        fileRow.appendChild(pickRow);
+        body.appendChild(fileRow);
+
+        const status = document.createElement('div');
+        status.className = 'modal-status';
+        body.appendChild(status);
+
+        dialog.appendChild(body);
+
+        // footer
+        const footer = document.createElement('div');
+        footer.className = 'modal-footer';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'btn';
+        cancelBtn.textContent = '取消';
+        cancelBtn.onclick = closeModal;
+        const okBtn = document.createElement('button');
+        okBtn.type = 'button';
+        okBtn.className = 'btn btn-primary';
+        okBtn.textContent = '确定';
+        okBtn.onclick = doUpload;
+        footer.appendChild(cancelBtn);
+        footer.appendChild(okBtn);
+        dialog.appendChild(footer);
+
+        overlay.appendChild(dialog);
+        overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
+        document.body.appendChild(overlay);
+
+        document.addEventListener('keydown', escapeDialog, true);
+
+        function setStatus(msg, kind) {
+            status.textContent = msg || '';
+            status.className = 'modal-status' + (kind ? ' ' + kind : '');
+        }
+
+        async function doUpload() {
+            const pwd = pwdInput.value;
+            if (!pwd) { setStatus('请输入密码', 'err'); pwdInput.focus(); return; }
+            if (!fileInput.files || !fileInput.files[0]) { setStatus('请选择文件', 'err'); return; }
+            const file = fileInput.files[0];
+            if (file.size > 50 * 1024 * 1024) { setStatus('文件超过 50MB 上限', 'err'); return; }
+
+            okBtn.disabled = true;
+            cancelBtn.disabled = true;
+            setStatus('正在上传…');
+
+            const form = new FormData();
+            form.append('file', file);
+            form.append('dir', CFG.root);
+            form.append('subdirs', currentPath.join('/'));
+
+            try {
+                const res = await fetch(UPLOAD_WORKER_URL + '/upload', {
+                    method: 'POST',
+                    headers: { 'Authorization': pwd },
+                    body: form
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data.ok) {
+                    setStatus(data.partial ? '已上传，索引稍后生效' : '上传成功', 'ok');
+                    setTimeout(() => { closeModal(); loadFileData(); }, 900);
+                } else {
+                    const detail = data.detail || data.status || '';
+                    setStatus('上传失败: ' + data.error + (detail ? ('（' + detail + '）') : ''), 'err');
+                }
+            } catch (err) {
+                setStatus('网络错误：' + err.message, 'err');
+            } finally {
+                okBtn.disabled = false;
+                cancelBtn.disabled = false;
+            }
+        }
+
+        function closeModal() {
+            if (!modalOpen) return;
+            modalOpen = false;
+            document.removeEventListener('keydown', escapeDialog, true);
+            document.body.removeChild(overlay);
+        }
+
+        pwdInput.focus();
+    }
+
+    // 在文件列表区域启用右键菜单（脚本在 body 末尾运行，#file-list 已存在）
+    (function initContextMenu() {
+        const fileList = document.getElementById('file-list');
+        if (fileList) {
+            fileList.addEventListener('contextmenu', function (e) {
+                e.preventDefault();
+                showContextMenu(e.clientX, e.clientY);
+            });
+        }
+    })();
+
     updateThemeToggleText();
     loadFileData();
 })();
