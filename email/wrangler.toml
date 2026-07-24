@@ -1,0 +1,25 @@
+name = "daakuulaa-email"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+routes = [
+  { pattern = "mail.dkl.cc.cd", custom_domain = true }
+]
+
+# D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "daakuulaa-email"
+database_id = "245733e3-513d-476b-bb35-1cb694e9bdca"
+
+# KV for sessions（先创建 KV 后填 ID）
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "6dfe222c64d7482a969e13882f8fd4aa"
+
+# 通过 `wrangler secret put` 设置：
+#   ADMIN_PASSWORD_HASH  - SHA-256 hex of admin password（必填）
+#   GITHUB_PAT           - 细粒度 PAT，Contents: read/write（附件存储需要）
