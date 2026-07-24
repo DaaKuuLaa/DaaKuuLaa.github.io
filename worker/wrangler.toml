@@ -1,0 +1,16 @@
+name = "daakuulaa-upload"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+
+# 保留 workers.dev 子域作为备用入口（开代理时仍可用）
+workers_dev = true
+
+# Secret（不要写在这里！通过 wrangler secret put 注入）：
+#   GITHUB_PAT            细粒度 PAT
+#   UPLOAD_PASSWORD_HASH  上传密码的 SHA-256 hex（小写）
+
+# 自定义域名（NS 迁移到 Cloudflare 后第二次 deploy 时生效）
+# 绑定 upload.dkl.cc.cd 子域，国内访问优于 workers.dev
+routes = [
+  { pattern = "upload.dkl.cc.cd", custom_domain = true }
+]

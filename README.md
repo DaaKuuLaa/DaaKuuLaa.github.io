@@ -39,7 +39,10 @@ DaaKuuLaa.github.io/
 ├── PathManager.py       # 文件/项目管理工具（源码）
 ├── PathManager.exe      # 文件/项目管理工具（可执行文件）
 ├── run_http.bat         # 启动网页服务
-└── run_PathManager.bat  # 启动 PathManager
+├── run_PathManager.bat  # 启动 PathManager
+└── worker/              # Cloudflare Worker（网页上传后端）
+    ├── worker.js        # Worker 源码（处理上传、调 GitHub API）
+    └── wrangler.toml    # Cloudflare 部署配置
 ```
 
 ## 工具说明
@@ -62,6 +65,54 @@ DaaKuuLaa.github.io/
 **打包：**
 ```bash
 pyinstaller --onefile --windowed --name PathManager PathManager.py
+```
+
+### 网页上传功能（Cloudflare Worker）
+
+文件管理器和项目管理工作都支持在网页上直接上传文件到当前的目录（右键 → 添加文件）。
+后端使用 Cloudflare Worker，PAT 与密码哈希都保存在 Worker Secret 中，源码不含敏感信息。
+
+**初次部署：**
+
+1. 安装 Wrangler（一次性）：
+```bash
+npm install -g wrangler
+wrangler login   # 浏览器授权 Cloudflare
+```
+
+2. 在 `worker/` 目录下部署：
+```bash
+cd worker
+wrangler deploy
+```
+部署后得到形如 `https://daakuulaa-upload.<你的子域>.workers.dev` 的地址。
+
+3. 注入两个 Secret：
+
+```bash
+# GitHub 细粒度 PAT（仅本仓库 Contents: read/write + Metadata: read）
+wrangler secret put GITHUB_PAT
+
+# 上传密码的 SHA-256 hex（小写）
+# 生成方式：echo -n "你的密码" | sha256sum
+wrangler secret put UPLOAD_PASSWORD_HASH
+```
+
+4. 把得到的 Worker URL 填入 `file.html` 和 `work.html` 中的
+   `EXPLORER_CONFIG.uploadUrl`。
+
+**安全设计：**
+- PAT 与密码哈希保存在 Cloudflare Secret，不出现在任何源码或前端
+- PAT 仅授予 `Contents: read/write`，无 Administration / Workflows 权限
+- 文件名加时间戳前缀，永不覆盖现有文件
+- 单文件上限 50MB（超限请用 PathManager 本地添加）
+- 仅可往 `File/` 或 `Work/` 写入，路径在服务端强制，前端无法绕过
+- 上传后自动在对应的 `file.json` / `work.json` 追加索引条目（带 sha 重试）
+
+**修改上传密码：**
+```bash
+echo -n "新密码" | sha256sum   # 拿到新 hash
+wrangler secret put UPLOAD_PASSWORD_HASH   # 重新注入
 ```
 
 ## 技术栈
