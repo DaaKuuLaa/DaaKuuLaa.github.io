@@ -53,6 +53,12 @@
           "path": "DaaKuuLaa.github.io/File/Test/F.7z",
           "type": "file",
           "projects": []
+        },
+        {
+          "name": "b.png",
+          "path": "DaaKuuLaa.github.io/File/Test/b.png",
+          "type": "file",
+          "projects": []
         }
       ]
     }
