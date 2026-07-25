@@ -242,36 +242,39 @@ async function handleLogin(request, env) {
     const { username, password } = body;
 
     if (!username || !password) {
-      return json({ ok: false, error: '请输入用户名和密码' }, 400);
+      return json({ ok: false, error: '请输入邮箱前缀和密码' }, 400);
     }
 
-    const usernameLower = username.toLowerCase();
+    const localPart = username.toLowerCase().trim().replace(/\s/g, '');
+    const fullEmail = `${localPart}@${DOMAIN}`;
 
-    // Auto-create admin user if ADMIN_PASSWORD_HASH is set and user doesn't exist
+    if (!localPart || localPart.includes('@') || localPart.length < 1) {
+      return json({ ok: false, error: '邮箱格式无效' }, 400);
+    }
+
     if (env.ADMIN_PASSWORD_HASH) {
       const existing = await env.DB.prepare(
         'SELECT id FROM users WHERE username = ?'
-      ).bind(usernameLower).first();
+      ).bind(fullEmail).first();
 
       if (!existing) {
-        // Create the user with the pre-configured password hash
         await env.DB.prepare(
           'INSERT OR IGNORE INTO users (username, password_hash) VALUES (?, ?)'
-        ).bind(usernameLower, env.ADMIN_PASSWORD_HASH).run();
+        ).bind(fullEmail, env.ADMIN_PASSWORD_HASH).run();
       }
     }
 
     const user = await env.DB.prepare(
       'SELECT id, password_hash FROM users WHERE username = ?'
-    ).bind(usernameLower).first();
+    ).bind(fullEmail).first();
 
     if (!user) {
-      return json({ ok: false, error: '用户名或密码错误' }, 401);
+      return json({ ok: false, error: '邮箱或密码错误' }, 401);
     }
 
     const hash = await sha256(password);
     if (hash !== user.password_hash) {
-      return json({ ok: false, error: '用户名或密码错误' }, 401);
+      return json({ ok: false, error: '邮箱或密码错误' }, 401);
     }
 
     const token = await createSession(env, user.id);
@@ -296,6 +299,97 @@ async function handleLogout() {
       'Set-Cookie': 'token=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0'
     }
   });
+}
+
+async function handleRegister(request, env) {
+  try {
+    const body = await request.json();
+    const { username, password } = body;
+
+    if (!username || !password) {
+      return json({ ok: false, error: '请输入邮箱前缀和密码' }, 400);
+    }
+
+    const localPart = username.toLowerCase().trim().replace(/\s/g, '');
+    const fullEmail = `${localPart}@${DOMAIN}`;
+
+    if (!localPart || localPart.includes('@') || localPart.length < 1) {
+      return json({ ok: false, error: '邮箱格式无效' }, 400);
+    }
+
+    if (password.length < 6) {
+      return json({ ok: false, error: '密码至少6个字符' }, 400);
+    }
+
+    const existing = await env.DB.prepare(
+      'SELECT id FROM users WHERE username = ?'
+    ).bind(fullEmail).first();
+
+    if (existing) {
+      return json({ ok: false, error: '该邮箱已注册' }, 409);
+    }
+
+    const hash = await sha256(password);
+    await env.DB.prepare(
+      'INSERT INTO users (username, password_hash) VALUES (?, ?)'
+    ).bind(fullEmail, hash).run();
+
+    const user = await env.DB.prepare(
+      'SELECT id FROM users WHERE username = ?'
+    ).bind(fullEmail).first();
+
+    const token = await createSession(env, user.id);
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': `token=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL}`
+      }
+    });
+  } catch (err) {
+    return json({ ok: false, error: '注册失败' }, 400);
+  }
+}
+
+async function handleChangePassword(request, env) {
+  const session = await requireAuth(request, env);
+  if (!session) return json({ ok: false, error: '未登录' }, 401);
+
+  try {
+    const body = await request.json();
+    const { oldPassword, newPassword } = body;
+
+    if (!oldPassword || !newPassword) {
+      return json({ ok: false, error: '请填写旧密码和新密码' }, 400);
+    }
+
+    if (newPassword.length < 6) {
+      return json({ ok: false, error: '新密码至少6个字符' }, 400);
+    }
+
+    const user = await env.DB.prepare(
+      'SELECT id, username, password_hash FROM users WHERE id = ?'
+    ).bind(session.userId).first();
+
+    if (!user) {
+      return json({ ok: false, error: '用户不存在' }, 404);
+    }
+
+    const oldHash = await sha256(oldPassword);
+    if (oldHash !== user.password_hash) {
+      return json({ ok: false, error: '旧密码错误' }, 401);
+    }
+
+    const newHash = await sha256(newPassword);
+    await env.DB.prepare(
+      'UPDATE users SET password_hash = ? WHERE id = ?'
+    ).bind(newHash, user.id).run();
+
+    return json({ ok: true, message: '密码修改成功' });
+  } catch (err) {
+    return json({ ok: false, error: '修改密码失败' }, 400);
+  }
 }
 
 async function handleListEmails(request, env, session) {
@@ -435,9 +529,11 @@ async function handleFetch(request, env) {
 
   // API routes
   if (path === '/api/login' && method === 'POST') return handleLogin(request, env);
+  if (path === '/api/register' && method === 'POST') return handleRegister(request, env);
   if (path === '/api/logout' && method === 'POST') {
     return handleLogout();
   }
+  if (path === '/api/change-password' && method === 'POST') return handleChangePassword(request, env);
   if (path === '/api/stats' && method === 'GET') {
     const session = await requireAuth(request, env);
     return handleStats(request, env, session);
@@ -596,6 +692,20 @@ html.dark-mode input, html.dark-mode textarea {
   border-color: rgba(255,255,255,0.12); color: #f5f7fa;
 }
 input:focus, textarea:focus { border-color: #4299e1; }
+.email-input-group { display:flex; align-items:stretch; }
+.email-input-group input { border-radius:10px 0 0 10px !important; flex:1; }
+.email-domain-suffix {
+  display:flex; align-items:center; padding:0 14px;
+  background:rgba(0,0,0,0.06);
+  border:1px solid rgba(0,0,0,0.12); border-left:none;
+  border-radius:0 10px 10px 0;
+  color:#718096; font-size:14px; white-space:nowrap; flex-shrink:0;
+}
+html.dark-mode .email-domain-suffix {
+  background:rgba(255,255,255,0.06);
+  border-color:rgba(255,255,255,0.12);
+  color:#a0aec0;
+}
 .btn {
   padding: 10px 20px; border-radius: 10px; border: none;
   font-size: 14px; font-weight: 600; cursor: pointer;
@@ -857,10 +967,10 @@ const App = {
     document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const err = document.getElementById('login-error');
-      const username = document.getElementById('username').value.trim();
-      const password = document.getElementById('password').value;
+      const username = document.getElementById('login-email').value.trim();
+      const password = document.getElementById('login-password').value;
       if (!username || !password) {
-        err.textContent = '请输入用户名和密码';
+        err.textContent = '请输入邮箱前缀和密码';
         return;
       }
       try {
@@ -878,6 +988,51 @@ const App = {
         err.textContent = '网络错误，请重试';
       }
     });
+    document.getElementById('show-register').addEventListener('click', (e) => {
+      e.preventDefault();
+      this.showRegister();
+    });
+  },
+
+  showRegister() {
+    document.getElementById('app').innerHTML = this.registerHTML();
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('register-error');
+      const username = document.getElementById('reg-email').value.trim();
+      const password = document.getElementById('reg-password').value;
+      const confirm = document.getElementById('reg-confirm').value;
+      if (!username || !password) {
+        err.textContent = '请输入邮箱前缀和密码';
+        return;
+      }
+      if (password !== confirm) {
+        err.textContent = '两次密码不一致';
+        return;
+      }
+      if (password.length < 6) {
+        err.textContent = '密码至少6个字符';
+        return;
+      }
+      try {
+        const res = await api('/api/register', {
+          method: 'POST',
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          this.render();
+        } else {
+          err.textContent = data.error || '注册失败';
+        }
+      } catch(e) {
+        err.textContent = '网络错误，请重试';
+      }
+    });
+    document.getElementById('show-login').addEventListener('click', (e) => {
+      e.preventDefault();
+      this.showLogin();
+    });
   },
 
   loginHTML() {
@@ -889,14 +1044,120 @@ const App = {
         <form id="login-form">
           <div id="login-error" class="login-error"></div>
           <div class="form-group">
-            <label class="form-label" for="username">用户名</label>
-            <input type="text" id="username" placeholder="请输入用户名" autocomplete="username" required>
+            <label class="form-label" for="login-email">邮箱地址</label>
+            <div class="email-input-group">
+              <input type="text" id="login-email" placeholder="请输入邮箱前缀" autocomplete="username" required>
+              <span class="email-domain-suffix">@${DOMAIN}</span>
+            </div>
           </div>
           <div class="form-group">
-            <label class="form-label" for="password">密码</label>
-            <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password" required>
+            <label class="form-label" for="login-password">密码</label>
+            <input type="password" id="login-password" placeholder="请输入密码" autocomplete="current-password" required>
           </div>
           <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;">登 录</button>
+        </form>
+        <div style="text-align:center;margin-top:16px;font-size:13px;color:#718096;">
+          没有账号？<a href="#" id="show-register" style="color:#4299e1;text-decoration:none;font-weight:600;">注册</a>
+        </div>
+      </div>
+    </div>\`;
+  },
+
+  registerHTML() {
+    return \`
+    <div class="login-page">
+      <div class="card login-card">
+        <div class="login-title">✉ 注册新账号</div>
+        <div class="login-subtitle">创建你的 DaaKuuLaa 邮箱账号</div>
+        <form id="register-form">
+          <div id="register-error" class="login-error"></div>
+          <div class="form-group">
+            <label class="form-label" for="reg-email">邮箱地址</label>
+            <div class="email-input-group">
+              <input type="text" id="reg-email" placeholder="请输入邮箱前缀" autocomplete="username" required>
+              <span class="email-domain-suffix">@${DOMAIN}</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-password">密码</label>
+            <input type="password" id="reg-password" placeholder="至少6个字符" autocomplete="new-password" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-confirm">确认密码</label>
+            <input type="password" id="reg-confirm" placeholder="再次输入密码" autocomplete="new-password" required>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;">注 册</button>
+        </form>
+        <div style="text-align:center;margin-top:16px;font-size:13px;color:#718096;">
+          已有账号？<a href="#" id="show-login" style="color:#4299e1;text-decoration:none;font-weight:600;">登录</a>
+        </div>
+      </div>
+    </div>\`;
+  },
+
+  showChangePassword() {
+    document.getElementById('app').innerHTML = this.changePasswordHTML();
+    document.getElementById('change-pw-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('change-pw-error');
+      const oldPassword = document.getElementById('cpw-old').value;
+      const newPassword = document.getElementById('cpw-new').value;
+      const confirm = document.getElementById('cpw-confirm').value;
+      if (!oldPassword || !newPassword) {
+        err.textContent = '请填写旧密码和新密码';
+        return;
+      }
+      if (newPassword !== confirm) {
+        err.textContent = '两次新密码不一致';
+        return;
+      }
+      if (newPassword.length < 6) {
+        err.textContent = '新密码至少6个字符';
+        return;
+      }
+      try {
+        const res = await api('/api/change-password', {
+          method: 'POST',
+          body: JSON.stringify({ oldPassword, newPassword })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast('密码修改成功', 'success');
+          this.render();
+        } else {
+          err.textContent = data.error || '修改密码失败';
+        }
+      } catch(e) {
+        err.textContent = '网络错误，请重试';
+      }
+    });
+  },
+
+  changePasswordHTML() {
+    return \`
+    <div class="nav-bar">
+      <div class="nav-left">
+        <button class="btn btn-ghost btn-sm" onclick="App.render()">← 返回收件箱</button>
+        <div class="nav-title">修改密码</div>
+      </div>
+    </div>
+    <div class="login-page" style="height:auto;padding-top:20px;">
+      <div class="card login-card">
+        <form id="change-pw-form">
+          <div id="change-pw-error" class="login-error"></div>
+          <div class="form-group">
+            <label class="form-label" for="cpw-old">当前密码</label>
+            <input type="password" id="cpw-old" placeholder="请输入当前密码" autocomplete="current-password" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cpw-new">新密码</label>
+            <input type="password" id="cpw-new" placeholder="至少6个字符" autocomplete="new-password" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cpw-confirm">确认新密码</label>
+            <input type="password" id="cpw-confirm" placeholder="再次输入新密码" autocomplete="new-password" required>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;">保存修改</button>
         </form>
       </div>
     </div>\`;
@@ -905,6 +1166,8 @@ const App = {
   async render() {
     const route = getRoute();
     if (route === '/login') { this.showLogin(); return; }
+    if (route === '/register') { this.showRegister(); return; }
+    if (route === '/change-password') { this.showChangePassword(); return; }
     await this.loadEmails();
     this.renderInbox();
   },
@@ -938,6 +1201,7 @@ const App = {
           <input type="text" id="search-input" placeholder="搜索邮件..." value="\${this.search}" onkeydown="if(event.key==='Enter'){App.search=this.value;App.page=1;App.render();}">
           <button class="btn btn-ghost btn-sm" onclick="App.search=document.getElementById('search-input').value;App.page=1;App.render();">搜索</button>
         </div>
+        <button class="btn btn-ghost btn-sm" onclick="App.showChangePassword()">修改密码</button>
         <button class="btn btn-ghost btn-sm" onclick="App.logout()">退出</button>
       </div>
     </div>
