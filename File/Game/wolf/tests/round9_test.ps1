@@ -201,15 +201,28 @@ function Pump-Bots($bots) {
     }
 }
 
-# 单行处理：身份/名单记录 + 夜晚输入应答（狼刀第一目标、预言家验 1、其余 0）
-function Handle-GameLine($cl, $line) {
+# 定狼刀目标：真人 bot 之间轮换会刀到已死玩家（bot1 死后目标恒为死人，
+# 服务器拒绝 → AskChoice 死循环）；目标固定取 NPC 槽位 3/4 之间轮转——
+# 4 人局 NPC 必占 3/4，且狼杀净 NPC 后游戏必然结束，不会出现双死循环
+$script:wolfDart = 0
+
+function Next-WolfTarget($cl, $allBots) {
+    $cands = @(3, 4)
+    $script:wolfDart = ($script:wolfDart + 1) % $cands.Count
+    $script:wolfTarget = $cands[$script:wolfDart]
+}
+
+# 单行处理：身份/名单记录 + 夜晚输入应答（狼刀轮换目标、预言家验 1、其余 0）
+function Handle-GameLine($cl, $line, $allBots) {
     if ($line -match '你被分配到 (\d+) 号位') { $cl.assigned = $Matches[1]; return }
     if ($line -match '^ROLE\|') { $cl.role = $line.Substring(5); return }
     if ($line -match '^PLAYER_LIST\|') { $cl.pl = $line; return }
     if ($line.Trim() -eq '__INPUT__') {
         $isWolf = ($cl.role -eq 'werewolf' -or $cl.role -eq 'whitewolf')
         if ($isWolf) {
-            if (-not $script:wolfTarget) { $script:wolfTarget = 1 }
+            # 应答必须立即发出（服务器 AskChoice 只问一次就阻塞等待，不重问）：
+            # 目标取下一只非自己的 bot（不依赖角色判定，避免首轮未定空发）
+            Next-WolfTarget $cl $allBots
             $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $script:wolfTarget)
         } elseif ($cl.role -eq 'seer') {
             $cl.w.WriteLine('PLAYER_' + $cl.k + '|1')
@@ -217,17 +230,6 @@ function Handle-GameLine($cl, $line) {
             $cl.w.WriteLine('PLAYER_' + $cl.k + '|0')
         }
     }
-}
-
-# 定狼刀目标：身份齐后取第一个非狼存活者
-function Ensure-WolfTarget($bots) {
-    if ($script:wolfTarget) { return }
-    $rolesKnown = (@($bots | Where-Object { $_.role -eq '' }).Count -eq 0)
-    if (-not $rolesKnown) { return }
-    foreach ($b in $bots) {
-        if ($b.role -ne 'werewolf' -and $b.role -ne 'whitewolf') { $script:wolfTarget = $b.k; return }
-    }
-    $script:wolfTarget = 1
 }
 
 try {
@@ -449,6 +451,8 @@ try {
     $voteC = $false
     $overC = $false
     $npcSpeakC = $false
+    $votedC = $false
+    $npcVoteC = $false
     $deadlineC = [DateTime]::Now.AddSeconds(120)
     $lastPingC = [DateTime]::Now
     while ([DateTime]::Now -lt $deadlineC) {
@@ -457,22 +461,23 @@ try {
             $lastPingC = [DateTime]::Now
         }
         Pump-Bots $botsC
-        Ensure-WolfTarget $botsC
         foreach ($b in $botsC) {
             while ($b.queue.Count -gt 0) {
                 $line = $b.queue.Dequeue()
-                Handle-GameLine $b $line
+                Handle-GameLine $b $line $botsC
                 if ($line -match 'PLAYER_LIST\|') { $script:plC = $line }
-                if ($line.Contains('白天发言阶段')) { $dayC = $true }
+                if ($line.Contains('白天发言阶段')) { $dayC = $true; $votedC = $false }
                 if ($line.Contains('WuffBot') -and ($line.Contains('：') -or $line.Contains(':'))) { $npcSpeakC = $true }
                 if ($line.Contains('WuffBot')) { $script:dbgC9 += ($line -replace '\|', '^') + '~' }
-                if ($line.Contains('投票给了玩家')) { $voteC = $true }
+                if ($line.Contains('投票给了玩家')) { $npcVoteC = $true }
                 if ($line.Trim() -eq '__GAME_OVER__') { $overC = $true }
             }
         }
-        if ($dayC -and -not $voteC) {
+        # 每个白天都须投票：$votedC 在每次「白天发言阶段」广播时重置，
+        # 否则白天 1 投过票后第 2 个白天不再投，Server 等投票 120s 超时（C11 实测）
+        if ($dayC -and -not $votedC) {
             foreach ($b in $botsC) { try { $b.w.WriteLine('PLAYER_' + $b.k + '|VOTE|0') } catch {} }
-            $voteC = $true
+            $votedC = $true
         }
         if ($overC) { break }
         Start-Sleep -Milliseconds 50
@@ -480,7 +485,7 @@ try {
     $plC = $script:plC
     Check 'C8 PLAYER_LIST 含 NPC 名（WuffBot/MidiBot）' ($plC -and $plC.Contains('WuffBot') -and $plC.Contains('MidiBot'))
     Check 'C9 白天阶段 NPC 发言广播出现' $npcSpeakC
-    Check 'C10 白天投票阶段 NPC 自动投票（投票广播出现）' $voteC
+    Check 'C10 白天投票阶段 NPC 自动投票（投票广播出现）' $npcVoteC
     Check 'C11 4 人 NPC 局正常结束（__GAME_OVER__）' $overC
     foreach ($b in $botsC) { Close-Client $b }
 
@@ -536,24 +541,46 @@ try {
     Check 'D7 START /F 开局（含本地用户，真人收 GAME_PREPARE）' (@($gpD | Where-Object { $_ }).Count -eq 2)
     foreach ($cl in $D) { Close-Client $cl }
 
-    # 等窗口自动连游戏端口，验证 PLAYER_LIST 含本地用户名
+    # 等窗口自动连游戏端口，验证 PLAYER_LIST 含本地用户名。
+    # Server 需 4/4 全连才开局：窗口已自动连 3/4 号位（LuUser/LuUser2），
+    # 真人槽 1/2 空着，探测必须补连 1、2 两个空位（否则 WaitForGameStart 永远等）
     $plD = $null
+    $tc1 = $null
+    $tc2 = $null
+    $w1 = $null
+    $w2 = $null
     $deadlineD = [DateTime]::Now.AddSeconds(25)
-    while ([DateTime]::Now -lt $deadlineD -and -not $plD) {
-        $tc = $null
-        try {
-            $tc = New-Object Net.Sockets.TcpClient
-            $tc.Connect('127.0.0.1', $portD)
-            $ss = $tc.GetStream()
-            $ww = New-Object IO.StreamWriter($ss, [System.Text.UTF8Encoding]::new($false))
-            $ww.NewLine = "`n"
-            $ww.AutoFlush = $true
-            $ww.WriteLine('PLAYER_ID|1')
-            $plD = RecvUntilStream $ss 'PLAYER_LIST' 8000
-            $tc.Close()
-        } catch {}
-        if (-not $plD) { Start-Sleep -Seconds 2 }
-    }
+    try {
+        $tc1 = New-Object Net.Sockets.TcpClient
+        $tc1.Connect('127.0.0.1', $portD)
+        $s1 = $tc1.GetStream()
+        $w1 = New-Object IO.StreamWriter($s1, [System.Text.UTF8Encoding]::new($false))
+        $w1.NewLine = "`n"
+        $w1.AutoFlush = $true
+        $w1.WriteLine('PLAYER_ID|1')
+
+        $tc2 = New-Object Net.Sockets.TcpClient
+        $tc2.Connect('127.0.0.1', $portD)
+        $s2 = $tc2.GetStream()
+        $w2 = New-Object IO.StreamWriter($s2, [System.Text.UTF8Encoding]::new($false))
+        $w2.NewLine = "`n"
+        $w2.AutoFlush = $true
+        $w2.WriteLine('PLAYER_ID|2')
+
+        $lastPingD = [DateTime]::Now
+        while ([DateTime]::Now -lt $deadlineD -and -not $plD) {
+            if (([DateTime]::Now - $lastPingD).TotalSeconds -ge 1) {
+                $w1.WriteLine('PING')
+                $w2.WriteLine('PING')
+                $lastPingD = [DateTime]::Now
+            }
+            $plD = RecvUntilStream $s1 'PLAYER_LIST' 3000
+        }
+    } catch {}
+    if ($w1) { try { $w1.WriteLine('PING') } catch {} }
+    if ($w2) { try { $w2.WriteLine('PING') } catch {} }
+    if ($tc1) { $tc1.Close() }
+    if ($tc2) { $tc2.Close() }
     Check 'D8 本地用户窗口自动连游戏端口，PLAYER_LIST 含 LuUser' ($plD -and $plD.Contains('LuUser') -and $plD.Contains('LuUser2'))
 
     # ============ E 段：失联 3 秒 ============
@@ -640,6 +667,9 @@ try {
     $addF = RecvUntilStream $F[0].s 'NPC' 3000
     Check 'F1 在线 NPC 添加成功' ($addF -and $addF.Contains('AIBot'))
 
+    SendLine $F[0] 'ADD NPC AIBot2 off'
+    $null = RecvUntilStream $F[0].s 'AIBot2' 3000
+
     SendLine $F[0] 'LEVEL|0'
     $null = RecvUntilStream $F[0].s '档位已' 2000
     SendLine $F[0] 'VILLAGER|1'
@@ -665,7 +695,7 @@ try {
         foreach ($b in $botsF) {
             while ($b.queue.Count -gt 0) {
                 $line = $b.queue.Dequeue()
-                Handle-GameLine $b $line
+                Handle-GameLine $b $line $botsF
                 if ($line.Contains('白天发言阶段')) { $dayF = $true }
                 if ($line.Contains('AIBot')) { $npcF = $true }
             }
@@ -676,16 +706,32 @@ try {
     Check 'F2 在线 NPC 局推进到白天且 NPC 出现' ($dayF -and $npcF)
     foreach ($b in $botsF) { Close-Client $b }
     Start-Sleep -Seconds 1
+    # 先杀 fake 进程再读输出：RedirectStandardOutput 句柄在进程存活期间
+    # 锁着文件，先读会抛「文件被占用」（F3 EXCEPTION 实测）
+    Stop-Process -Id $fakeProc.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800
     $fakeOk = $false
+    $fakeTxt = ''
     if (Test-Path -LiteralPath $fakeOut) {
-        $fakeTxt = [System.IO.File]::ReadAllText($fakeOut, [System.Text.Encoding]::Unicode)
-        if ($fakeTxt.Contains('REQ:')) { $fakeOk = $true }
+        for ($try = 0; $try -lt 3 -and -not $fakeOk; $try++) {
+            try {
+                # fake server 是 Start-Process 独立进程（不是 *> 重定向），stdout 走
+                # 进程管道编码（UTF-8 无 BOM），与主脚本的 UTF-16LE 输出不同——必须按
+                # 字节探测：非 FF FE 开头按 UTF-8 读（F3 实测假服务器输出即 UTF-8）
+                $bytes = [System.IO.File]::ReadAllBytes($fakeOut)
+                if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+                    $fakeTxt = [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+                } else {
+                    $fakeTxt = [System.Text.Encoding]::UTF8.GetString($bytes)
+                }
+                if ($fakeTxt.Contains('REQ:')) { $fakeOk = $true }
+            } catch { Start-Sleep -Milliseconds 500 }
+        }
     }
     Check 'F3 在线 NPC 调用了 API（假服务器收到请求或已回退离线）' $fakeOk
     Remove-Item Env:WOLF_NPC_API_URL -ErrorAction SilentlyContinue
     Remove-Item Env:WOLF_NPC_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
     Remove-Item Env:WOLF_NPC_RETRIES -ErrorAction SilentlyContinue
-    Stop-Process -Id $fakeProc.Id -Force -ErrorAction SilentlyContinue
 
     Kill-All
     Write-Output ("")

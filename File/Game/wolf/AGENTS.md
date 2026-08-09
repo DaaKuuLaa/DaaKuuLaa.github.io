@@ -2,7 +2,7 @@
 
 联网控制台版狼人杀 C++ 项目。源码：`Start.cpp`（房间管理器）/ `Server.cpp`（单局服务器）/ `Client.cpp`（客户端）/ `common.h`（共享协议与职业表），测试脚本在 `tests/`。狼人杀复用了 `reference/demon/`（恶魔轮盘，已完成的参考项目）已验证的架构、协议思路和所有已修复的坑。
 
-> 当前状态：**第九轮（新增：JOIN 分支空指针崩进程修复 + 脚本匹配串优化 + 在线 NPC 发言与自动入房验证）**（round9_test.ps1 47 项 PASS 43 FAIL：核心 A1-E2 全通，F 段因未 START /F 导致 NPC 发言/API 失败，G 段本地用户自动入房待修复）。第一至七轮已实现并通过 tests/ 脚本。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
+> 当前状态：**第九轮完成（round9_test.ps1 47 项全 PASS）**：JOIN 分支空指针修复、命令封装与输出、槽位空洞压缩名单、PICK/TRANSFER 非法目标、兜底回滚与 REJOIN、在线 NPC 发言/API/自动入房（D/E/F 段）全部通过。第一至八轮已实现并通过 tests/ 脚本。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
 
 ## 工作目录铁律（最重要）
 
@@ -73,7 +73,7 @@
 - `tests/round6_test.ps1` — **40 项**第六轮验收（§16：NAME 长度≥2 码点（单字符/单数字/单汉字拒、2 码点成、空名回退不回归、白名单先于长度）/ STATUS 竖排表（表头/行数/中文名对齐/ST 随 READY 变）/ IP·LG 服务端行为（大厅拒、房主查、非房主拒）/ 短别名与全称混用（ST·CR·TF·VG 全通）/ 端口释放三路径（E：兜底回滚杀孤儿 Server→REJOIN 重开同端口成功、F：Server 25s 超时 RELEASE→销毁→同端口重建、G：BAN 踢空回收→同端口重建）/ 攻击（伪造 RELEASE/GAME_ENDED 未知房间不崩、单字符名可 BAN、拉黑大小写变体 JOIN 拒、聊天注入 | 原样广播不入指令））。新增 E5：E3 兜底回滚后同端口重新开局成功（含新 Server 欢迎语断言）。
 - `tests/round7_test.ps1` — **10 项**第七轮验收（§17 实际落地内容：A 段直连 4 人局全员收到 `PLAYER_LIST|4|...` 广播且行内容一致（顺序=Server 传参顺序、含总数头字段、无职业信息）、B 段 Server 对 PING 回 PING 应答（半开死连检测基础）、C 段兜底不误杀存活 Server（WOLF_GAME_WAIT_SECONDS=2 注入 → 全员断大厅不连游戏服 4s 后 Server.exe 仍在+房间仍 [游戏中] → 4 人连游戏服触发真开局，中文名全链路进 PLAYER_LIST+PING 应答））。
 - `tests/round8_test.ps1` — **16 项**第八轮验收（§18：A 段 Start 无参数交互输入监听端口（stdin 喂 8890 生效；先喂非法 80 再喂 8891 的重输流程）与 Server 回连用实际端口；B 段紧凑 4 人局 PLIST 对齐（GAME_PREPARE pid=1,2,3,4 / 欢迎语槽位一致 / PLAYER_LIST 行 / 白天「玩家Alice 投票给了玩家Bob（槽2）」名字对齐 / VOTE·BOMB 非法目标原因+请重新输入）；C 段槽位空洞局（5 人房去 1 人）压缩名单序对齐（pid=1,2,3,4、PLAYER_LIST=AliceC|BobC|DaveC|EveC、DaveC=3 号位、白天 DaveC 投票广播）；D 段 PICK/TRANSFER 目标不存在「目标玩家不存在：<参数>（…），请重新输入」；E 段杀 Server 后兜底回滚、空洞局全员按 gamePid REJOIN 回原槽、STATUS 槽位对齐）。
-- `tests/round9_test.ps1` — **47 项**第九轮验收（§19：A 段本地用户 JOIN 分支空指针修复（A11 根因：room->localUsers 解引用）、B 段命令封装与输出（C2 匹配 'NPCs'、D5/6 SendLine/RecvUntil、C7 pid 断言、C9 全角冒号）；C 段槽位空洞局压缩名单（C1-C4 全 PASS）；D 段 PICK/TRANSFER 非法目标提示（D1-D2 PASS）；E 段兜底回滚与 REJOIN（E1-E2 PASS）；F 段在线 NPC 发言与 API 调用（F1 PASS、F2-F3 FAIL 需 START /F）；G 段本地用户自动连游戏端口（G1-G3 FAIL 待修复））。
+- `tests/round9_test.ps1` — **47 项**第九轮验收（§19：A 段本地用户 JOIN 分支空指针修复（A11 根因：room->localUsers 解引用）、B 段命令封装与输出（SHOW/LOOK 族、NPC 列表 'NPCs'、ADD USER/NPC、BAN 模式、LOOK 非法用法）；C 段槽位空洞局（GAME_PREPARE 压缩 pid、PICK/TRANSFER 非法目标、NPC 局全流程：在线 NPC 发言广播+自动投票+完整昼夜走到 __GAME_OVER__）；D 段本地用户窗口（ADD USER 拉起窗口进程、-u 指定控制者、重名拒绝、窗口自动入房 STATUS、SHOW ADD、Player 3/4 自动连游戏端口、PLAYER_LIST 含 LuUser 名）；E 段断线判活（3s 静默清连接、PING 保活 6s 不断）；F 段在线 NPC 发言与 API 调用（4 人局白天到达、假 HTTP 服务器收到 REQ）——**47 项全 PASS**）。
 
 运行方式（串行执行，输出文件仅作参考，以脚本 **exit code** 为准）：
 `powershell -NoProfile -ExecutionPolicy Bypass -File tests\xxx.ps1 *> tests\xxx_out.txt`
@@ -111,6 +111,10 @@
 27. **兜底回滚只对「Server.exe 进程已死」生效（round7 修复，round8 E 段复踩）**：`CheckGameWaitTimeouts` 检查到「全员进游戏且超时未收到通知」时，若 `GameServerProcessAlive(r)` 为真（进程活着在等玩家/对局中）就重置计时继续观察，**不回滚**——测「回滚后 REJOIN」的脚本必须先 `Stop-Process Server` 模拟启动即死，再等注入窗口；否则房间一直 [游戏中]，REJOIN 全被拒「游戏仍在进行中」。
 28. **PowerShell 变量名大小写不敏感**：`$R` 与 `$r` 是**同一变量**（round6 E3 改造新增 `$r = RecvUntil ...` 后，E 段数组 `$R` 被覆盖成 String → foreach 遍历出 Char 元素 → `$cl.wlock` 为 null、Monitor.Enter 抛异常、E 段全毁）——脚本内避免大小写仅不同的变量名；数组收集一律用 `[System.Collections.ArrayList]` + `.Add()`（`@() + $hash` 会塌缩成单元素且 hashtable+hashtable 是**合并**不是追加）。
 29. **断言用 `-match` 收集行时正则别写太宽（round8 B 段假 PASS 前身）**：`$hits += $line` 前用 `-match '投票目标不合法|自爆目标不合法|投票给了玩家|弃权'` 收集白天证据，结果「白天发言阶段…0 弃权」提示行匹配「弃权」→ `Count -ge 3` 提前 break、VOTE/BOMB 响应还没收到就退出（同一晚跑 PASS 另一晚 FAIL 的不稳定源）→ 收集正则必须精确到目标行本身，退出条件用 `$hits -match '目标串'` 显式判断而非计数。
+30. **AskChoice 只问一次不重问（round9 C 段 120s 卡死根因之一）**：夜晚 `AskChoice/AskWolfTarget` 发提示+`__INPUT__` 后**阻塞等待**，不循环重发（循环重问只在收到非法输入后发生）——狼 bot 目标「未定时不发」会永久等死。**修复：狼 bot 收到 `__INPUT__` 必须立即应答任意合法目标**（不能自刀）；目标池只取 NPC 槽位（4 人局 NPC 恒占 3/4），真人 bot 互轮换会在目标死后恒指向死人被拒、无限重问。
+31. **白天投票必须按「白天发言阶段」重置（round9 C11 白天 2 卡死根因）**：投票标志白天 1 投过就永久 true，白天 2 起真人 bot 不再投票 → `GatherDayVotes` 等剩余票直到超时 → 无 `__GAME_OVER__`。**修复：每次收到「白天发言阶段」广播把已投标志置 false**（该广播每白天恰一次，是天然阶段同步点）；白天投票不经 `__INPUT__`（白天只开 `__DAY_OPEN__`），按横幅触发集中发 `PLAYER_k|VOTE|0`。
+32. **Start-Process 子进程输出是 UTF-8 无 BOM，不是主脚本 `*> 重定向` 的 UTF-16LE（round9 F3 FAIL 根因）**：npc_fake_server.ps1 由 Start-Process -RedirectStandardOutput 拉起，stdout 走子进程管道编码（UTF-8 无 BOM），主脚本按 `[Text.Encoding]::Unicode` 读全乱码 → `Contains('REQ:')` 恒假 → **读子进程输出必须先看字节头：FF FE → Unicode，否则按 UTF-8**（与踩坑 20 主进程重定向场景相反）。
+33. **Server 必须全槽位连上才开局（round9 D8 FAIL 根因）**：`WaitForGameStart` 等**所有**压缩名单槽位连好才广播 `PLAYER_LIST`。D 段真人 socket 收 GAME_PREPARE 即关（不连游戏端口），本地用户窗口自动连 3/4 位，1/2 空槽无人 → 永远等 → 25s RELEASE。**验证「本地用户自动连游戏端口」时，脚本必须自己补连空槽（`PLAYER_ID|k` 填上 1/2）+ 每 1s PING 保活**，否则 PLAYER_LIST 永不广播。
 
 ## 需求规格（狼人杀版，作为验收依据）
 

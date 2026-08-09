@@ -2323,11 +2323,13 @@ int main()
 
     // 自动模式：把 JOIN 注入命令队列，由主循环走 HandleCommand 的 JOIN 分支
     // （端口校验与发送路径与手动输入完全一致）；注入在用户输入之前入队，
-    // 保证先自动入房、后接管操作者输入
+    // 保证先自动入房、后接管操作者输入。
+    // 命令用空格分隔（SplitTokens/GetLineArgs 按空格分词），不能用竖线——
+    // 竖线会把整行当成一个未知命令 token，JOIN 永远发不出去（D 段实测）
     if (g_autoMode)
     {
         lock_guard<mutex> lock(g_cmdMutex);
-        g_cmdQueue.push_back("JOIN|" + g_autoRoomPort);
+        g_cmdQueue.push_back("JOIN " + g_autoRoomPort);
     }
 
     ShowPrompt();
