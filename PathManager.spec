@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['PathManager.py'],
+    ['D:\\DKL\\DaaKuuLaa.github.io\\PathManager.py'],
     pathex=[],
     binaries=[],
     datas=[],
