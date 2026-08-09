@@ -242,6 +242,8 @@ const CommandEntry COMMANDS[] = {
     { "PICK",    "踢",       "",    "<槽号或名字>", "【房主】踢出指定玩家（禁入 10 秒）", "[Host] Kick a player (blocked for 10s)", CMD_GROUP_ROOM },
     { "BAN",     "拉黑",     "",    "<名字/IP 或文件>", "【房主】拉黑玩家或 IP（空格分隔批量，.ban 文件导入）", "[Host] Ban players or IPs (space-separated batch, .ban file import)", CMD_GROUP_ROOM },
     { "UNBAN",   "取消拉黑", "",    "<名字/IP 或文件>", "【房主】取消拉黑（批量或 .ban 文件导入）", "[Host] Unban names or IPs (batch or .ban file import)", CMD_GROUP_ROOM },
+    { "MUTE",    "禁言",     "",    "<槽号/名字/通配/ALL>", "【房主】禁言玩家（空格分隔多项；被禁言者的聊天不会广播）", "[Host] Mute players (space-separated; muted chat is not broadcast)", CMD_GROUP_ROOM },
+    { "UNMUTE",  "解禁",     "",    "<名字/通配/ALL>",       "【房主】解除禁言（空格分隔多项；ALL 清空全部禁言）", "[Host] Unmute players (space-separated; ALL clears all)", CMD_GROUP_ROOM },
     { "IP",      "查IP",     "",    "<玩家名>",       "【房主】查询房间内玩家 IP（游戏期保留槽位也可查）", "[Host] Show a player's IP (retained slots queryable)", CMD_GROUP_ROOM },
     { "LG",      "日志",     "",    "",               "【房主】查看房间玩家进出记录", "[Host] Show room entry/exit log", CMD_GROUP_ROOM },
     { "LEVEL",   "档位",     "",    "<0|1|2>",      "【房主】设置职业档位（0 基础 / 1 经典 / 2 豪华）", "[Host] Set role level (0 basic / 1 classic / 2 deluxe)", CMD_GROUP_ROOM },

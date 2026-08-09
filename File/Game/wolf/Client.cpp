@@ -101,6 +101,13 @@ int g_startPort = 8888;
 bool g_autoMode = false;
 string g_autoRoomPort;                 // 自动模式要加入的房间端口
 
+// 游戏中继模式（§20.7）：游戏消息经房间管理器连接转发（GAME_FWD|<行>）而非
+// 直连游戏端口。与直连互斥：g_relayMode=true 时 g_gameSock 保持 INVALID_SOCKET
+atomic<bool> g_relayMode(false);
+
+// 本局房间号（GAME_PREPARE 解析缓存）：中继申请/断线重连向 Start 指名房间用
+string g_gameRoomId;
+
 atomic<bool> g_switchingToGame(false); // 正在切换进游戏（抑制大厅断线提示）
 atomic<bool> g_inputThreadRunning(true);
 atomic<bool> g_inputThreadStarted(false);  // 输入线程是否已启动（PauseAndWait 依据）
@@ -126,6 +133,9 @@ void PingThreadFunc()
         Sleep(HEARTBEAT_INTERVAL_SECONDS * 1000);
         if (g_sock != INVALID_SOCKET) SendRaw("PING");
         if (g_gameSock != INVALID_SOCKET) SendGameRaw("PING");
+        // 中继模式无直连 socket：游戏心跳必须显式走 GAME_FWD|PING 上行，
+        // 否则 Server 会因长时间无字节判定本玩家失联（§20.7）
+        if (g_relayMode && g_sock != INVALID_SOCKET) SendGameRaw("PING");
     }
 }
 
@@ -230,6 +240,13 @@ void SendRaw(const string& msg)
 
 void SendGameRaw(const string& msg)
 {
+    // 中继模式：游戏消息经 Start 转发（GAME_FWD|<行>），不直连游戏端口
+    if (g_relayMode)
+    {
+        if (g_sock != INVALID_SOCKET) SendRaw("GAME_FWD|" + msg);
+        return;
+    }
+
     if (g_gameSock == INVALID_SOCKET) return;
 
     string out = msg + "\n";
@@ -675,8 +692,15 @@ void HandleLobbyDisconnect()
 // ============ 游戏连接处理 ============
 
 // 尽力通知游戏服务器"放弃重连"（连接一次、发送即走，结果无关紧要）。
+// 中继模式改经 Start 转发：直连可能本来就失败，靠 GAME_FWD 上行才送得到
 void SendGiveUp()
 {
+    if (g_relayMode)
+    {
+        if (g_sock != INVALID_SOCKET) SendRaw("GAME_FWD|GIVEUP|" + to_string(g_myGamePlayerId));
+        return;
+    }
+
     SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
 
     if (s == INVALID_SOCKET) return;
@@ -693,6 +717,193 @@ void SendGiveUp()
     }
 
     closesocket(s);
+}
+
+// 是否强制走中继（§20.7）：环境变量 WOLF_FORCE_PROXY=1 时跳过直连尝试，
+// 游戏消息一律经房间管理器 Start 转发。仅在自动化测试注入
+bool IsForceProxyEnv()
+{
+    const char* env = getenv("WOLF_FORCE_PROXY");
+    return env != nullptr && strcmp(env, "1") == 0;
+}
+
+// 直连游戏服务器（GAME_PREPARE 路径）：最多 5 次（间隔 1 秒）。
+// 成功返回 true 并完成：g_inGame 置位、读超时、PLAYER_ID 握手、启动游戏
+// 接收线程；失败返回 false（g_gameSock 已清理，调用方改走中继或回房）
+bool TryConnectGameDirect()
+{
+    g_gameSock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (g_gameSock == INVALID_SOCKET)
+    {
+        ClientLog("Failed to create game socket");
+        return false;
+    }
+
+    sockaddr_in gameAddr;
+    gameAddr.sin_family = AF_INET;
+    inet_pton(AF_INET, g_gameServerIp.c_str(), &gameAddr.sin_addr);
+    gameAddr.sin_port = htons(g_gameServerPort);
+
+    // 连接游戏服务器：带重试。失败的 connect 会使套接字失效，必须重建后重试
+    const int connectTries = 5;
+    bool connected = false;
+
+    for (int attempt = 1; attempt <= connectTries && !connected; ++attempt)
+    {
+        if (attempt > 1)
+        {
+            Sleep(1000);
+
+            if (g_gameSock != INVALID_SOCKET)
+            {
+                closesocket(g_gameSock);
+                g_gameSock = INVALID_SOCKET;
+            }
+
+            g_gameSock = socket(AF_INET, SOCK_STREAM, 0);
+
+            if (g_gameSock == INVALID_SOCKET)
+            {
+                ClientLog("Failed to recreate game socket");
+                break;
+            }
+        }
+
+        if (connect(g_gameSock, (sockaddr*)&gameAddr, sizeof(gameAddr)) == 0)
+        {
+            connected = true;
+            break;
+        }
+
+        ClientLog("Game connect attempt " + to_string(attempt) + " failed, errno=" + to_string(WSAGetLastError()));
+    }
+
+    if (!connected)
+    {
+        if (g_gameSock != INVALID_SOCKET)
+        {
+            closesocket(g_gameSock);
+            g_gameSock = INVALID_SOCKET;
+        }
+
+        return false;
+    }
+
+    g_inGame = true;
+
+    // 读超时：半开死连检测（详见 SetGameRecvTimeout 说明）
+    SetGameRecvTimeout(g_gameSock);
+
+    string idMsg = "PLAYER_ID|" + to_string(g_myGamePlayerId) + "\n";
+    send(g_gameSock, idMsg.c_str(), idMsg.length(), 0);
+
+    ClientLog("Connected to game server, player ID: " + to_string(g_myGamePlayerId));
+
+    StartGameRecvThread();
+
+    return true;
+}
+
+// 等待 Start 对 PROXY_GAME 的应答（PROXY_OK|<房间号> 或 PROXY_FAIL|<原因>）。
+// 只消费 PROXY_* 行；等待期间的其他行（中继建立前的零星流量）直接丢弃，
+// 不打扰游戏状态；大厅断线则重连并返回失败。房接收线程与主线程同源走
+// 消息队列，主线程独占消费无并发冲突
+bool WaitProxyResponse(string& out, int timeoutSeconds)
+{
+    auto deadline = chrono::steady_clock::now() + chrono::seconds(timeoutSeconds);
+
+    while (g_running)
+    {
+        long long remainMs = chrono::duration_cast<chrono::milliseconds>(deadline - chrono::steady_clock::now()).count();
+
+        if (remainMs <= 0) return false;
+
+        string m;
+
+        if (PopMessage(m, (int)min<long long>(remainMs, 200)))
+        {
+            if (m.find("PROXY_OK|") == 0 || m.find("PROXY_FAIL|") == 0)
+            {
+                out = m;
+                return true;
+            }
+
+            if (m == "DISCONNECTED")
+            {
+                // 大厅连接断了：先重连，由下一次尝试重发 PROXY_GAME
+                HandleLobbyDisconnect();
+                return false;
+            }
+
+            // 其他行：中继建立前的零星流量，丢弃
+        }
+    }
+
+    return false;
+}
+
+// 经房间管理器 Start 中继进入游戏（§20.7）：不直连游戏端口，把大厅连接
+// 变成游戏消息通道。PROXY_GAME|<roomId>|<playerId> → PROXY_OK 进入中继
+// 模式（此后"发往游戏服务器"的写一律改为 GAME_FWD|<行>）；PROXY_FAIL
+// 显示原因后重试（Start 可能在等游戏服务器就绪，稍后同请求可能成功）；
+// 超时/断线也计一次失败。最多重试 3 次（间隔 2 秒），成功返回 true 并置
+// g_relayMode/g_switchingToGame=false（大厅断线须能上报），否则返回 false
+// （调用方回落大厅既有路径）
+bool StartGameProxy(const string& roomId, int playerId)
+{
+    const int maxTries = 3;
+
+    for (int attempt = 1; attempt <= maxTries; ++attempt)
+    {
+        if (attempt > 1)
+        {
+            cout << FmtLang(CurLang(), "  中继连接失败（第 %d 次），2 秒后重试 ...", "  Relay connect failed (try %d), retry in 2s ...", attempt - 1) << endl;
+            Sleep(2000);
+        }
+
+        // 大厅连接是中继的唯一物理通道：失效则先重连
+        if (g_sock == INVALID_SOCKET)
+        {
+            HandleLobbyDisconnect();
+
+            if (g_sock == INVALID_SOCKET || !g_running) return false;
+        }
+
+        SendRaw("PROXY_GAME|" + roomId + "|" + to_string(playerId));
+        ClientLog("PROXY_GAME|" + roomId + "|" + to_string(playerId));
+
+        string resp;
+
+        if (!WaitProxyResponse(resp, 10))
+        {
+            cout << Txt(CurLang(), "  等待中继应答超时。", "  Timeout waiting for the relay reply.") << endl;
+            continue;
+        }
+
+        if (resp.find("PROXY_OK|") == 0)
+        {
+            // 中继建立：进入中继模式。PLAYER_ID 认领槽位也走 GAME_FWD 上行
+            // （Start 的 GAME_FWD 注解明确 PLAYER_ID 认领走中继通道）
+            g_relayMode = true;
+            g_switchingToGame = false;
+
+            SendGameRaw("PLAYER_ID|" + to_string(playerId));
+
+            ClientLog("PROXY_OK for room " + roomId);
+            return true;
+        }
+
+        // PROXY_FAIL|<原因>：显示中文原因后继续重试（最多 3 次）
+        string reason = resp.substr(11);
+
+        if (reason.empty()) reason = Txt(CurLang(), "未知原因", "unknown reason");
+
+        EnsureNewLine();
+        cout << FmtLang(CurLang(), "中继被拒绝：%s", "Relay rejected: %s", reason.c_str()) << endl;
+    }
+
+    return false;
 }
 
 // 结束游戏状态，关闭游戏连接，回到大厅（房间管理器连接会自动重建）。
@@ -734,6 +945,21 @@ void ReturnToRoom()
     }
 
     if (g_gameRecvThread.joinable()) g_gameRecvThread.join();
+
+    // 中继模式：游戏消息经大厅连接收发，回房前必须先关掉该连接再重建——
+    // 否则 ConnectToRoomManager 的 join 会卡在活 socket 的 recv 上（死锁）
+    if (g_relayMode)
+    {
+        g_relayMode = false;
+
+        if (g_sock != INVALID_SOCKET)
+        {
+            closesocket(g_sock);
+            g_sock = INVALID_SOCKET;
+        }
+
+        if (g_roomRecvThread.joinable()) g_roomRecvThread.join();
+    }
 
     g_inRoom = false;
     g_isAdmin = false;
@@ -817,14 +1043,17 @@ bool WaitGameAckLine(SOCKET s, string& out, int timeoutSeconds)
 }
 
 // 游戏连接中断后的重连流程（主线程调用，可能阻塞 10~20 秒）。
-// 最多尝试 3 次（间隔 5 秒）；全部失败 → GIVEUP 并返回大厅。
+// 最多尝试 3 次直连（间隔 5 秒）；全部失败（或 WOLF_FORCE_PROXY 强制）→
+// 改经 Start 中继；中继也失败 → GIVEUP 并返回大厅
 void HandleGameReconnect()
 {
     const int maxTries = 3;
+    bool forceProxy = IsForceProxyEnv();
 
     EnsureNewLine();
     cout << Txt(CurLang(), "与游戏服务器的连接断开，正在尝试重连 ...", "Game connection lost, reconnecting ...") << endl;
 
+    // 中继残留防御性清理：中继模式下本就没有直连 socket/接收线程
     if (g_gameSock != INVALID_SOCKET)
     {
         closesocket(g_gameSock);
@@ -833,75 +1062,85 @@ void HandleGameReconnect()
 
     if (g_gameRecvThread.joinable()) g_gameRecvThread.join();
 
-    for (int attempt = 1; attempt <= maxTries; ++attempt)
+    if (!forceProxy)
     {
-        if (attempt > 1)
+        for (int attempt = 1; attempt <= maxTries; ++attempt)
         {
-            cout << FmtLang(CurLang(), "  第 %d 次重连失败，5 秒后重试 ...", "  Retry %d failed, waiting 5s ...", attempt - 1) << endl;
-            Sleep(5000);
-        }
+            if (attempt > 1)
+            {
+                cout << FmtLang(CurLang(), "  第 %d 次重连失败，5 秒后重试 ...", "  Retry %d failed, waiting 5s ...", attempt - 1) << endl;
+                Sleep(5000);
+            }
 
-        cout << FmtLang(CurLang(), "  正在尝试重连 %d/%d ...", "  Reconnecting %d/%d ...", attempt, maxTries) << endl;
+            cout << FmtLang(CurLang(), "  正在尝试重连 %d/%d ...", "  Reconnecting %d/%d ...", attempt, maxTries) << endl;
 
-        SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+            SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
 
-        if (s == INVALID_SOCKET) continue;
+            if (s == INVALID_SOCKET) continue;
 
-        sockaddr_in addr;
-        addr.sin_family = AF_INET;
-        inet_pton(AF_INET, g_gameServerIp.c_str(), &addr.sin_addr);
-        addr.sin_port = htons(g_gameServerPort);
+            sockaddr_in addr;
+            addr.sin_family = AF_INET;
+            inet_pton(AF_INET, g_gameServerIp.c_str(), &addr.sin_addr);
+            addr.sin_port = htons(g_gameServerPort);
 
-        if (connect(s, (sockaddr*)&addr, sizeof(addr)) != 0)
-        {
-            closesocket(s);
-            continue;
-        }
-
-        // 重连套接字同样设读超时：半开死连检测（同 GAME_PREPARE 路径）
-        SetGameRecvTimeout(s);
-
-        // 重连握手：先告知服务器我们的玩家编号，再等待其确认行。
-        // 任何一行都视为重连成功；"already connected"（被踢）或
-        // 超时/EOF 计一次失败，杜绝旧的"连上即成功→被踢→再连"假成功循环。
-        // 确认等待期间 g_gameSock 仍是 INVALID_SOCKET：心跳线程不会往
-        // 新套接字发 PING，游戏接收线程也未启动，主线程独占读取无并发冲突
-        string idMsg = "PLAYER_ID|" + to_string(g_myGamePlayerId) + "\n";
-        send(s, idMsg.c_str(), idMsg.length(), 0);
-
-        const int ackTimeoutSeconds = 3;
-        string ack;
-        bool ackOk = false;
-
-        if (WaitGameAckLine(s, ack, ackTimeoutSeconds))
-        {
-            if (ack.find("already connected") != string::npos)
+            if (connect(s, (sockaddr*)&addr, sizeof(addr)) != 0)
             {
                 closesocket(s);
                 continue;
             }
 
-            ackOk = true;
+            // 重连套接字同样设读超时：半开死连检测（同 GAME_PREPARE 路径）
+            SetGameRecvTimeout(s);
+
+            // 重连握手：先告知服务器我们的玩家编号，再等待其确认行。
+            // 任何一行都视为重连成功；"already connected"（被踢）或
+            // 超时/EOF 计一次失败，杜绝旧的"连上即成功→被踢→再连"假成功循环。
+            // 确认等待期间 g_gameSock 仍是 INVALID_SOCKET：心跳线程不会往
+            // 新套接字发 PING，游戏接收线程也未启动，主线程独占读取无并发冲突
+            string idMsg = "PLAYER_ID|" + to_string(g_myGamePlayerId) + "\n";
+            send(s, idMsg.c_str(), idMsg.length(), 0);
+
+            const int ackTimeoutSeconds = 3;
+            string ack;
+            bool ackOk = false;
+
+            if (WaitGameAckLine(s, ack, ackTimeoutSeconds))
+            {
+                if (ack.find("already connected") != string::npos)
+                {
+                    closesocket(s);
+                    continue;
+                }
+
+                ackOk = true;
+            }
+
+            if (!ackOk)
+            {
+                closesocket(s);
+                continue;
+            }
+
+            // 确认行就是服务端欢迎文本（如"你被分配到 N 号位。欢迎回来！"），
+            // 已被本次读取消费不再入队，直接回显以免丢失
+            if (!ack.empty()) cout << "  " << ack << endl;
+
+            g_gameSock = s;
+            StartGameRecvThread();
+
+            cout << Txt(CurLang(), "  重连成功，游戏继续！", "  Reconnected, game continues!") << endl;
+            return;
         }
+    }
 
-        if (!ackOk)
-        {
-            closesocket(s);
-            continue;
-        }
-
-        // 确认行就是服务端欢迎文本（如"你被分配到 N 号位。欢迎回来！"），
-        // 已被本次读取消费不再入队，直接回显以免丢失
-        if (!ack.empty()) cout << "  " << ack << endl;
-
-        g_gameSock = s;
-        StartGameRecvThread();
-
-        cout << Txt(CurLang(), "  重连成功，游戏继续！", "  Reconnected, game continues!") << endl;
+    // 直连全部失败（或强制中继）：尝试经 Start 中继重连
+    if (StartGameProxy(g_gameRoomId, g_myGamePlayerId))
+    {
+        cout << Txt(CurLang(), "  经房间服务器中继重连成功，游戏继续！", "  Reconnected via lobby relay, game continues!") << endl;
         return;
     }
 
-    // 3 次都失败：通知服务器放弃（服务器据此立即结束本局），回到大厅
+    // 直连与中继都失败：通知服务器放弃（服务器据此立即结束本局），回到大厅
     cout << Txt(CurLang(), "  重连失败，通知服务器结束本局并返回大厅 ...", "  Reconnect failed, ending game and returning to lobby ...") << endl;
     SendGiveUp();
     ReturnToRoom();
@@ -1385,8 +1624,8 @@ struct HelpDetail
 static const HelpDetail HELP_DETAILS[] = {
     { "HELP", "HELP [ALL|指令名|职业名]：无参数显示命令表；HELP ALL 显示全部职业列表；HELP <指令名> 显示指令用法；HELP <职业名> 显示职业介绍。中文别名「帮助」。",
                "HELP [ALL|command|role]: no arg shows the command list; HELP ALL lists all roles; HELP <command> shows its usage; HELP <role> shows role info. Chinese alias: 帮助." },
-    { "SHOW", "SHOW <子项>：查看房间信息。子项：BAN 黑名单（房主）、RATIO 比例、LEVEL 档位、VILLAGER 村民开关、AUTO 自动开局、ADD 本地用户与 NPC（房主）。无参数或未知子项输出用法。与 LOOK 完全等效。",
-               "SHOW <item>: view room info. Items: BAN blacklist (host), RATIO ratio, LEVEL role level, VILLAGER toggle, AUTO auto-start, ADD local users and NPCs (host). No arg or unknown item prints usage. Fully equivalent to LOOK." },
+    { "SHOW", "SHOW <子项>：查看房间信息。子项：BAN 黑名单（房主）、RATIO 比例、LEVEL 档位、VILLAGER 村民开关、AUTO 自动开局、ADD 本地用户与 NPC（房主）、MUTE 禁言名单（房主）。无参数或未知子项输出用法。与 LOOK 完全等效。",
+               "SHOW <item>: view room info. Items: BAN blacklist (host), RATIO ratio, LEVEL role level, VILLAGER toggle, AUTO auto-start, ADD local users and NPCs (host), MUTE mute list (host). No arg or unknown item prints usage. Fully equivalent to LOOK." },
     { "LOOK", "LOOK <子项>：查看房间信息，与 SHOW 完全等效（用法见 HELP SHOW）。",
                "LOOK <item>: view room info, fully equivalent to SHOW (see HELP SHOW)." },
     { "ADD", "ADD USER <username> [-u] <玩家名或槽位>：添加本地用户占槽位（开局自动开窗进游戏；无 -u 默认由房主控制，-u 指定控制者）。ADD NPC [NPCname] on|off：添加 NPC（on 在线 AI / off 离线逻辑）。【房主】【大厅可用】",
@@ -1395,6 +1634,10 @@ static const HelpDetail HELP_DETAILS[] = {
                "BAN <name/IP/wildcard or .ban file>: ban players or IPs; matched joins are rejected and in-room matches are kicked. Wildcards * (any digits) and ? (one digit), full-width ＊？equivalent; space-separated batch; .ban files import line by line. [Host]" },
     { "UNBAN", "UNBAN <名字/IP/通配模式或 .ban 文件>：取消拉黑，按模式串精确删除；批量与 .ban 文件导入同 BAN。【房主】",
                  "UNBAN <name/IP/wildcard or .ban file>: remove bans, exact pattern-string match; batch and .ban file import same as BAN. [Host]" },
+    { "MUTE", "MUTE <槽号/名字/通配模式/ALL>...：禁言玩家，空格分隔多项。被禁言者的聊天不会广播（命令照常可用）；ALL 禁言全部（含今后加入者）；离房/被踢自动解除精确名项。【房主】",
+              "MUTE <slot/name/wildcard/ALL>...: mute players, space-separated. Muted players' chat is not broadcast (commands still work); ALL mutes everyone including future joiners; exact-name entries auto-lift on leave/kick. [Host]" },
+    { "UNMUTE", "UNMUTE <名字/通配模式/ALL>...：解除禁言，空格分隔多项；ALL 清空整个禁言名单。【房主】",
+                "UNMUTE <name/wildcard/ALL>...: lift mutes, space-separated; ALL clears the whole mute list. [Host]" },
     { "START", "START：全员准备后开始游戏。START /F（或 /FORCE）强制开局：跳过全员准备检查，比例不符时自动设置合理组合并直接采用。【房主】",
                  "START: start the game when all players are ready. START /F (or /FORCE) forces the start: skips the ready check; a mismatched ratio is auto-adjusted and applied directly. [Host]" },
     { "AUTO", "AUTO：切换「全员准备自动开局」开关，开启后全员准备即自动开始。【房主】",
@@ -1602,6 +1845,54 @@ void HandleCommand(const string& line)
         return;
     }
 
+    // ==== SHOW/LOOK/ADD：房间/大厅/游戏三场景分发（§20.x） ====
+    // 这三条不能被游戏内兜底当聊天发出，也不能落进"Game only."兜底：
+    // 房间内原样转发给 Start（权限与校验都由服务端做），大厅给用法说明，
+    // 游戏内给本地提示
+    if (cmd != nullptr
+        && (_stricmp(cmd->en, "SHOW") == 0 || _stricmp(cmd->en, "ADD") == 0))
+    {
+        if (g_inGame)
+        {
+            // 游戏内不可用：只本地提示，绝不发给游戏服务器
+            cout << Txt(CurLang(), "SHOW/LOOK/ADD 游戏内不可用，请回房后使用。", "SHOW/LOOK/ADD are not available in game; use them back in the room.") << endl;
+            return;
+        }
+
+        if (g_inRoom)
+        {
+            // 房间内：原文转发（命令字保留键入的 SHOW/LOOK/ADD，中文别名
+            // 归一为英文全名；Look→SHOW 条目），Start 按命令表统一解析
+            string fwd = tokens[0];
+
+            if (_stricmp(fwd.c_str(), "SHOW") != 0
+                && _stricmp(fwd.c_str(), "LOOK") != 0
+                && _stricmp(fwd.c_str(), "ADD") != 0)
+            {
+                fwd = cmd->en;
+            }
+
+            SendRaw(fwd + "|" + SanitizeChat(args));
+            return;
+        }
+
+        // 大厅：SHOW/LOOK 打印用法说明，ADD 提示先入房
+        if (_stricmp(cmd->en, "SHOW") == 0)
+        {
+            cout << Txt(CurLang(),
+                "SHOW <子项>（LOOK 等效）：查看房间信息。子项：BAN 黑名单 / RATIO 比例 / LEVEL 档位 / VILLAGER 村民开关 / AUTO 自动开局 / ADD 本地用户与 NPC / MUTE 禁言名单。进入房间后可查看；游戏内不可用。",
+                "SHOW <item> (LOOK equivalent): view room info. Items: BAN blacklist / RATIO ratio / LEVEL role level / VILLAGER villager toggle / AUTO auto-start / ADD local users & NPCs / MUTE mute list. Viewable after joining a room; not in game.") << endl;
+        }
+        else
+        {
+            cout << Txt(CurLang(),
+                "ADD：添加本地用户（新窗口，由指定玩家控制）或 NPC（on=在线 AI / off=离线逻辑）。请先创建或加入房间后再使用 ADD。",
+                "ADD: add a local user (new window, controlled by a player) or an NPC (on=online AI / off=offline logic). Please create or join a room before using ADD.") << endl;
+        }
+
+        return;
+    }
+
     // ==== 游戏内兜底：任何输入都发给游戏服务器 ====
     if (g_inGame)
     {
@@ -1717,7 +2008,18 @@ void HandleCommand(const string& line)
 
         if (_stricmp(cmd->en, "START") == 0)
         {
-            SendRaw("START");
+            // 原样转发：无参数发裸 START；带参数（START /F、/FORCE，尾随
+            // 空格已被 GetLineArgs 裁掉）拼进参数区，准备检查/强制开局等
+            // 校验全部由 Start 侧完成，客户端不做本地拦截
+            if (args.empty())
+            {
+                SendRaw("START");
+            }
+            else
+            {
+                SendRaw("START|" + SanitizeChat(args));
+            }
+
             return;
         }
 
@@ -1748,6 +2050,14 @@ void HandleCommand(const string& line)
             }
 
             SendRaw("UNBAN|" + SanitizeChat(args));
+            return;
+        }
+
+        if (_stricmp(cmd->en, "MUTE") == 0 || _stricmp(cmd->en, "UNMUTE") == 0)
+        {
+            // 禁言/解禁（房主专属）：参数原样转发，不做本地拦截——空参数、
+            // 权限与名单校验全部由 Start 侧完成/应答（§20.4）
+            SendRaw(string(cmd->en) + "|" + SanitizeChat(args));
             return;
         }
 
@@ -1834,6 +2144,8 @@ void HandleCommand(const string& line)
         || _stricmp(cmd->en, "PICK") == 0
         || _stricmp(cmd->en, "BAN") == 0
         || _stricmp(cmd->en, "UNBAN") == 0
+        || _stricmp(cmd->en, "MUTE") == 0
+        || _stricmp(cmd->en, "UNMUTE") == 0
         || _stricmp(cmd->en, "IP") == 0
         || _stricmp(cmd->en, "LG") == 0
         || _stricmp(cmd->en, "LEVEL") == 0
@@ -2343,6 +2655,31 @@ int main()
         {
             if (msg == "DISCONNECTED")
             {
+                // 中继模式下大厅连接是游戏消息的唯一通道：断开必须重连大厅
+                // 并恢复游戏链路——清中继标志后走既有游戏重连（直连→失败再中继）
+                if (g_inGame && g_relayMode)
+                {
+                    g_relayMode = false;
+                    g_inputSolicited = false;
+                    g_dayTalk = false;
+                    SetInputGate(InputGate::Closed);
+                    ShowCursor(false);
+
+                    HandleLobbyDisconnect();
+
+                    if (!g_running) continue;
+
+                    // HandleLobbyDisconnect 按大厅视角重开了输入门，游戏重连
+                    // 期间必须关回，等服务器 __INPUT__ 再开
+                    g_inputSolicited = false;
+                    g_dayTalk = false;
+                    SetInputGate(InputGate::Closed);
+                    ShowCursor(false);
+
+                    HandleGameReconnect();
+                    continue;
+                }
+
                 // 游戏期间大厅连接本就已关闭，误收到的断开消息忽略
                 if (g_inGame) continue;
 
@@ -2398,13 +2735,68 @@ int main()
                 continue;
             }
 
+            // ---- 中继模式消息分流：游戏行（GAME_FWD|）与大厅行各走各的 ----
+            if (g_inGame && g_relayMode)
+            {
+                if (msg.find("GAME_FWD|") == 0)
+                {
+                    // 剥前缀交给游戏消息处理（与直连同入口：ROLE/PLAYER_LIST/
+                    // RESULT/__INPUT__/白天广播等）
+                    string gm = msg.substr(9);
+
+                    // 终态行：与直连一致的 __GAME_OVER__ 处理（正常收尾直接回房）
+                    if (gm == "__GAME_OVER__")
+                    {
+                        g_gameOver = true;
+                        ClientLog("RELAY_GAME_OVER");
+
+                        // 自动模式（§19.8）：本局已正常结束，进程直接退出关窗
+                        if (g_autoMode)
+                        {
+                            ClientLog("AUTO_MODE exit on __GAME_OVER__ (relay)");
+                            ShutdownClient();
+                            return 0;
+                        }
+
+                        if (g_inGame) ReturnToRoom();
+                        continue;
+                    }
+
+                    ProcessGameMessage(gm);
+                    continue;
+                }
+
+                if (msg.find("PROXY_FAIL|") == 0)
+                {
+                    // Start 拒绝/撤销中继：显示原因，清中继标志后走既有游戏
+                    // 重连（直连 → 失败再中继）
+                    string reason = msg.substr(11);
+
+                    EnsureNewLine();
+                    cout << FmtLang(CurLang(), "游戏中继被拒绝：%s", "Game relay rejected: %s", reason.c_str()) << endl;
+
+                    g_relayMode = false;
+                    g_inputSolicited = false;
+                    g_dayTalk = false;
+                    SetInputGate(InputGate::Closed);
+                    ShowCursor(false);
+
+                    HandleGameReconnect();
+                    continue;
+                }
+
+                // 其他行（RELEASE/ROOM_MSG/ERROR 等）走既有房间处理
+                HandleRoomMessage(msg);
+                continue;
+            }
+
             if (g_inGame)
             {
                 ProcessGameMessage(msg);
                 continue;
             }
 
-            // ---- 开始游戏：连接房间管理器指定的游戏服务器 ----
+            // ---- 开始游戏：连接房间管理器指定的游戏服务器（或经 Start 中继）----
             if (msg.find("GAME_PREPARE|") == 0)
             {
                 string rest = msg.substr(13);
@@ -2415,6 +2807,7 @@ int main()
                 if (p1 == string::npos || p2 == string::npos || p3 == string::npos) continue;
 
                 g_gameServerPort = atoi(rest.substr(0, p1).c_str());
+                g_gameRoomId = rest.substr(p1 + 1, p2 - p1 - 1);
                 g_gameServerIp = rest.substr(p2 + 1, p3 - p2 - 1);
                 g_myGamePlayerId = atoi(rest.substr(p3 + 1).c_str());
                 g_switchingToGame = true;
@@ -2443,86 +2836,62 @@ int main()
                 SetInputGate(InputGate::Closed);
                 ShowCursor(false);
 
-                // 关闭大厅连接（游戏期间不再接收大厅消息）
-                closesocket(g_sock);
-                g_sock = INVALID_SOCKET;
-                g_inRoom = false;
-
                 EnsureNewLine();
                 cout << Txt(CurLang(), "正在连接游戏服务器 ...", "Connecting to game server ...") << endl;
 
-                g_gameSock = socket(AF_INET, SOCK_STREAM, 0);
+                // 直连 vs 中继：WOLF_FORCE_PROXY=1 强制中继（测试注入）；
+                // 否则先走既有直连（5 次 × 1 秒），全部失败再经 Start 中继
+                bool forceProxy = IsForceProxyEnv();
 
-                if (g_gameSock == INVALID_SOCKET)
+                if (!forceProxy && TryConnectGameDirect())
                 {
-                    ClientLog("Failed to create game socket");
-                    g_switchingToGame = false;
-                    ReturnToRoom();
-                    continue;
-                }
-
-                sockaddr_in gameAddr;
-                gameAddr.sin_family = AF_INET;
-                inet_pton(AF_INET, g_gameServerIp.c_str(), &gameAddr.sin_addr);
-                gameAddr.sin_port = htons(g_gameServerPort);
-
-                // 连接游戏服务器：带重试。失败的 connect 会使套接字失效，必须重建后重试
-                const int connectTries = 5;
-                bool connected = false;
-
-                for (int attempt = 1; attempt <= connectTries && !connected; ++attempt)
-                {
-                    if (attempt > 1)
-                    {
-                        Sleep(1000);
-
-                        if (g_gameSock != INVALID_SOCKET)
-                        {
-                            closesocket(g_gameSock);
-                            g_gameSock = INVALID_SOCKET;
-                        }
-
-                        g_gameSock = socket(AF_INET, SOCK_STREAM, 0);
-
-                        if (g_gameSock == INVALID_SOCKET)
-                        {
-                            ClientLog("Failed to recreate game socket");
-                            break;
-                        }
-                    }
-
-                    if (connect(g_gameSock, (sockaddr*)&gameAddr, sizeof(gameAddr)) == 0)
-                    {
-                        connected = true;
-                        break;
-                    }
-
-                    ClientLog("Game connect attempt " + to_string(attempt) + " failed, errno=" + to_string(WSAGetLastError()));
-                }
-
-                if (connected)
-                {
-                    g_inGame = true;
-
-                    // 读超时：半开死连检测（详见 SetGameRecvTimeout 说明）
-                    SetGameRecvTimeout(g_gameSock);
-
-                    string idMsg = "PLAYER_ID|" + to_string(g_myGamePlayerId) + "\n";
-                    send(g_gameSock, idMsg.c_str(), idMsg.length(), 0);
-
-                    ClientLog("Connected to game server, player ID: " + to_string(g_myGamePlayerId));
-
-                    StartGameRecvThread();
+                    // 直连成功：按既有流程关闭大厅连接（游戏期间不再接收
+                    // 大厅消息），回房时由重连流程重建
+                    closesocket(g_sock);
+                    g_sock = INVALID_SOCKET;
+                    g_inRoom = false;
 
                     // 输入线程常驻，无需暂停/重建；
                     // 门控已在 GAME_PREPARE 处关闭，仅 __INPUT__ 时打开
                 }
                 else
                 {
-                    ClientLog("Failed to connect to game server");
-                    cout << Txt(CurLang(), "连接游戏服务器失败。", "Failed to connect to game server.") << endl;
+                    // 直连失败（或强制中继）：改经 Start 中继。中继复用的是
+                    // 大厅连接，不能关闭；大厅断线由 DISCONNECTED 流程恢复
+                    if (g_gameSock != INVALID_SOCKET)
+                    {
+                        closesocket(g_gameSock);
+                        g_gameSock = INVALID_SOCKET;
+                    }
+
+                    if (g_gameRecvThread.joinable()) g_gameRecvThread.join();
+
+                    // 中继阶段大厅连接意外断开必须上报（DISCONNECTED）以恢复游戏链路
                     g_switchingToGame = false;
-                    ReturnToRoom();
+                    g_inRoom = false;
+
+                    if (forceProxy)
+                    {
+                        cout << Txt(CurLang(), "已启用强制中继模式，正在连接游戏服务器 ...", "Force-proxy mode enabled; connecting to the game server ...") << endl;
+                    }
+                    else
+                    {
+                        cout << Txt(CurLang(), "直连游戏服务器失败，改由房间服务器中继 ...", "Direct game connect failed; relaying via the lobby ...") << endl;
+                    }
+
+                    if (StartGameProxy(g_gameRoomId, g_myGamePlayerId))
+                    {
+                        // 中继成功：游戏消息改经大厅连接收发（g_relayMode 已置位）
+                        g_inGame = true;
+                        ClientLog("Connected to game server via proxy, player ID: " + to_string(g_myGamePlayerId));
+                    }
+                    else
+                    {
+                        ClientLog("Failed to connect to game server (direct and proxy)");
+                        cout << Txt(CurLang(), "连接游戏服务器失败。", "Failed to connect to game server.") << endl;
+                        g_switchingToGame = false;
+                        ReturnToRoom();
+                    }
                 }
 
                 continue;
