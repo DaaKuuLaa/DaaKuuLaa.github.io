@@ -2,7 +2,7 @@
 
 联网控制台版狼人杀 C++ 项目。源码：`Start.cpp`（房间管理器）/ `Server.cpp`（单局服务器）/ `Client.cpp`（客户端）/ `common.h`（共享协议与职业表），测试脚本在 `tests/`。狼人杀复用了 `reference/demon/`（恶魔轮盘，已完成的参考项目）已验证的架构、协议思路和所有已修复的坑。
 
-> 当前状态：**第十轮客户端部分完成**：SHOW/LOOK/ADD 三场景分发（房间内原文转发 Start / 大厅用法说明 / 游戏内本地提示，不再落 GameOnly 兜底）、MUTE/UNMUTE（common.h 命令表 + 房间内转发 + HELP 条目）、START /F 参数原样转发（不再丢弃）、游戏中继（§20.7：WOLF_FORCE_PROXY=1 强制中继，直连 5 次失败回退 Start 中继；PROXY_GAME/PROXY_OK/PROXY_FAIL、GAME_FWD 双向转发、GAME_FWD|PING 心跳、断线/重连直连→中继、__GAME_OVER__ 收尾同直连），Client.exe 与 Client_en.exe 编译通过，server_test/round9_test 回归全 PASS。Start/Server 侧改动由另一代理负责，未随本提交。第九轮（round9_test.ps1 47 项全 PASS）及其之前均已实现并通过 tests/ 脚本。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
+> 当前状态：**第十轮客户端部分完成**：SHOW/LOOK/ADD 三场景分发（房间内原文转发 Start / 大厅用法说明 / 游戏内本地提示，不再落 GameOnly 兜底）、MUTE/UNMUTE（common.h 命令表 + 房间内转发 + HELP 条目）、START /F 参数原样转发（不再丢弃）、游戏中继（§20.7：WOLF_FORCE_PROXY=1 强制中继，直连 5 次失败回退 Start 中继；PROXY_GAME/PROXY_OK/PROXY_FAIL、GAME_FWD 双向转发、GAME_FWD|PING 心跳、断线/重连直连→中继、__GAME_OVER__ 收尾同直连），Client.exe 与 Client_en.exe 编译通过，server_test/round9_test 回归全 PASS。**第十轮验收脚本 tests/round10_test.ps1 已完成并 23 项全 PASS**（A 女巫救/毒流程与屠边、B 丘比特/盗贼情报保密、D 房内 MUTE/UNMUTE/SHOW/通配化简、E 游戏内禁言传递：白天发言驳回+投票仍可用）。Start/Server 侧改动由另一代理负责，未随本提交。第九轮（round9_test.ps1 47 项全 PASS）及其之前均已实现并通过 tests/ 脚本。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
 
 ## 工作目录铁律（最重要）
 
