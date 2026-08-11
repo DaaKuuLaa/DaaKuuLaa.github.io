@@ -24,9 +24,11 @@
 //   - 在线决策可失败：超时/非 200/JSON 解析失败一律返回空串，绝不抛异常，
 //     由调用方回退离线逻辑。
 //   - 环境变量覆盖（测试注入用，见 §19.7）：
-//     WOLF_NPC_API_URL（默认官方地址）、WOLF_NPC_API_KEY（默认源码常量）、
-//     WOLF_NPC_TIMEOUT_SECONDS（默认 15，范围 1-60）、
-//     WOLF_NPC_RETRIES（默认 2，范围 0-5）。
+//     WOLF_NPC_API_URL（默认官方地址）、WOLF_NPC_API_KEY（有 env 直接用，
+//     否则读 DPAPI 加密落盘文件 npc_key.bin，见 NpcResolveKey）、
+//     WOLF_NPC_TIMEOUT_SECONDS（默认 10，范围 1-60）、
+//     WOLF_NPC_RETRIES（默认 1，范围 0-5）。
+//   - 秘钥不写死在源码里：源码/二进制泄露不等于 key 泄露（需求 5.1）。
 
 #ifndef WOLF_NPC_BOT_H
 #define WOLF_NPC_BOT_H
@@ -34,11 +36,13 @@
 #include "common.h"
 
 #include <winhttp.h>
+#include <dpapi.h>
 #include <random>
 #include <cstring>
 #include <cctype>
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "crypt32.lib")
 
 // ============ 随机数（线程安全） ============
 
@@ -150,6 +154,11 @@ struct NpcContext
     vector<int> alivePlayers;       // 存活玩家索引（未填用 aliveSlots）
     int dayNumber = 0;              // 当前天数（0=未知，从 history "第N夜/天" 解析）
     int lastGuardTarget = 0;        // 守卫上一夜守的对象（0=未知，从 history 解析）
+
+    // ---- 自由讨论上下文（白天聊天专用；夜晚/投票决策不需要时留空即可） ----
+    vector<string> chatLog;         // 本白天全部聊天行（名字：内容，含投票广播）
+    string atTarget;                // 被 @ 时的完整文本（去@头内容+完整原始行），无=空
+    string lastChat;                // 距上次该 NPC 发言后新增的聊天拼接（限 400 字）
 };
 
 // 取决策者索引（Server 的 selfIndex 优先）
@@ -577,8 +586,151 @@ inline bool NpcContains(const vector<int>& v, int x)
     return false;
 }
 
+// ============ UTF-8 码点工具（别称匹配用） ============
+
+// 取 s 中第 i 字节处一个码点的字节数（1-4）；i 越界或非法序列返回 0
+inline size_t NpcCpLenAt(const string& s, size_t i)
+{
+    if (i >= s.size()) return 0;
+
+    unsigned char c = (unsigned char)s[i];
+
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+
+    return 0;
+}
+
+// 字符串的码点个数（多字节字符按码点算，2 码点门限必须用码点而非字节数）
+inline size_t NpcCpCount(const string& s)
+{
+    size_t n = 0;
+
+    for (size_t i = 0; i < s.size(); )
+    {
+        size_t len = NpcCpLenAt(s, i);
+
+        if (len == 0)
+        {
+            ++i;
+            continue;
+        }
+
+        ++n;
+        i += len;
+    }
+
+    return n;
+}
+
+// 名字的保守近似匹配（宁漏勿误：错认别称会冤枉好人）：
+// 1) 槽位写法「N号」「N 号」：直呼槽号是最直白的指名，直接命中；
+// 2) 首码点相同 + 目标名 ≥2 码点 + 文中提及片段 2-4 码点 + 同句含
+//    发言/投票/阵营等社会性词，才判为别名；
+// 3) 单码点名字（如"A"）不纳入，任何 ASCII 单字母都能当首码点，误伤太高
+inline bool NpcMatchNickname(const string& line, const string& name, int slot)
+{
+    if (name.empty()) return false;
+
+    // 槽位写法：数字 + 「号」（中间可有一个 ASCII 空格）
+    string num = to_string(slot);
+
+    for (size_t p = 0; p + num.size() <= line.size(); ++p)
+    {
+        bool same = true;
+
+        for (size_t i = 0; i < num.size(); ++i)
+        {
+            if (line[p + i] != num[i])
+            {
+                same = false;
+                break;
+            }
+        }
+
+        if (!same) continue;
+
+        // 数字前不能还是数字：「13号」不能被「3号」误中
+        if (p > 0 && isdigit((unsigned char)line[p - 1])) continue;
+
+        size_t after = p + num.size();
+
+        if (after < line.size() && line[after] == ' ') ++after;
+
+        if (after + 3 <= line.size() && line.compare(after, 3, "号") == 0) return true;
+    }
+
+    if (NpcCpCount(name) < 2) return false;
+
+    // 同句必须有"讨论感"词，纯名字串（如名单行）不做别名猜测
+    static const char* const kws[] = {
+        "发言", "说", "觉得", "认为", "投票", "票", "狼", "好人",
+        "身份", "怀疑", "验", "查", "死", "刀",
+    };
+    bool kwHit = false;
+
+    for (size_t k = 0; k < sizeof(kws) / sizeof(kws[0]); ++k)
+    {
+        if (line.find(kws[k]) != string::npos)
+        {
+            kwHit = true;
+            break;
+        }
+    }
+
+    if (!kwHit) return false;
+
+    // 首码点比对：取目标名第一个码点，逐码点位置试取 2-4 码点片段
+    size_t firstLen = NpcCpLenAt(name, 0);
+
+    if (firstLen == 0 || firstLen >= name.size()) return false;
+
+    const string firstCp = name.substr(0, firstLen);
+
+    for (size_t i = 0; i < line.size(); )
+    {
+        size_t len = NpcCpLenAt(line, i);
+
+        if (len == 0)
+        {
+            ++i;
+            continue;
+        }
+
+        if (line.compare(i, len, firstCp) != 0)
+        {
+            i += len;
+            continue;
+        }
+
+        // 从该起点向后延伸 2-4 个码点都算候选片段（2 码点即名字本身时跳过）
+        size_t j = i;
+        int cps = 0;
+
+        while (j < line.size() && cps < 4)
+        {
+            size_t l2 = NpcCpLenAt(line, j);
+
+            if (l2 == 0) break;
+
+            ++cps;
+            j += l2;
+
+            // 片段不得就是全名：全名命中走精确匹配，别在近似路径重复计数
+            if (cps >= 2 && line.compare(i, j - i, name) != 0) return true;
+        }
+
+        i += len;
+    }
+
+    return false;
+}
+
 // 在历史行里找"关键词 + 玩家名同现"的线索目标：同一行出现任一关键词、
-// 且出现某个玩家名（独立词边界）即命中。逐行分析防跨行拼凑出假线索
+// 且出现某个玩家名（独立词边界）即命中。逐行分析防跨行拼凑出假线索。
+// 精确全名之外补一个保守近似（槽位号/首码点别名），命中同样记入候选
 inline void NpcFindNameTargets(const NpcContext& ctx, const vector<string>& lines,
                                const char** kws, size_t kwCount, vector<int>& out)
 {
@@ -606,14 +758,23 @@ inline void NpcFindNameTargets(const NpcContext& ctx, const vector<string>& line
 
             if (nm.empty()) continue;
 
+            // 精确全名命中后不再跑近似路径：同名重复计数没有信息量
+            bool exactHit = false;
+
             size_t p = line.find(nm);
 
             while (p != string::npos)
             {
-                if (NpcNameBoundaryOk(line, p, nm)) out.push_back(s);
+                if (NpcNameBoundaryOk(line, p, nm))
+                {
+                    out.push_back(s);
+                    exactHit = true;
+                }
 
                 p = line.find(nm, p + nm.size());
             }
+
+            if (!exactHit && NpcMatchNickname(line, nm, s)) out.push_back(s);
         }
     }
 }
@@ -688,6 +849,269 @@ inline int NpcPickSuspect(const NpcContext& ctx, const vector<string>& lines, in
     return 0;
 }
 
+// ============ 权重随机与话题统计（自由讨论用） ============
+
+// 简单占位替换：模板新增 {top} 等占位不扩展 NpcFill 的参数量，
+// 独立替换函数避免多参数时的次序错位
+inline string NpcReplacePh(const string& tmpl, const char* ph, const string& v)
+{
+    string s = tmpl;
+    size_t p;
+
+    while ((p = s.find(ph)) != string::npos) s.replace(p, strlen(ph), v);
+
+    return s;
+}
+
+// 权重随机选一个：总权重内均匀随机，权重越高的候选被选中的概率越大。
+// 空表返回 0（调用方保证不空时才有悬念）
+inline int NpcWeightedPick(const vector<pair<int, int>>& cand)
+{
+    if (cand.empty()) return 0;
+
+    int total = 0;
+
+    for (size_t i = 0; i < cand.size(); ++i) total += cand[i].second;
+
+    if (total <= 0) return cand[0].first;
+
+    int r = NpcRandInt(0, total - 1);
+
+    for (size_t i = 0; i < cand.size(); ++i)
+    {
+        r -= cand[i].second;
+
+        if (r < 0) return cand[i].first;
+    }
+
+    return cand.back().first;
+}
+
+// 在聊天行里数某名字被独立提及的次数（「名字：内容」行内可能有多次出现）
+inline int NpcMentionCount(const NpcContext& ctx, int slot)
+{
+    if (slot < 1 || slot > (int)ctx.names.size()) return 0;
+
+    const string& nm = ctx.names[slot - 1];
+
+    if (nm.empty()) return 0;
+
+    int c = 0;
+
+    for (size_t li = 0; li < ctx.chatLog.size(); ++li)
+    {
+        const string& ln = ctx.chatLog[li];
+        size_t p = ln.find(nm);
+
+        while (p != string::npos)
+        {
+            if (NpcNameBoundaryOk(ln, p, nm)) ++c;
+
+            p = ln.find(nm, p + nm.size());
+        }
+    }
+
+    return c;
+}
+
+// 聊天里是否被 @ 过：@ 后第一个 token（到空格/全角冒号）等于名字或槽号
+inline bool NpcAtMentioned(const NpcContext& ctx, int slot)
+{
+    if (slot < 1 || slot > (int)ctx.names.size()) return false;
+
+    const string& nm = ctx.names[slot - 1];
+
+    for (size_t li = 0; li < ctx.chatLog.size(); ++li)
+    {
+        const string& ln = ctx.chatLog[li];
+        size_t p = 0;
+
+        while ((p = ln.find('@', p)) != string::npos)
+        {
+            size_t q = p + 1;
+
+            while (q < ln.size() && ln[q] != ' ' && ln[q] != '：'
+                   && (unsigned char)ln[q] < 0x80)
+            {
+                ++q;
+            }
+
+            string tok = ln.substr(p + 1, q - p - 1);
+
+            if (!tok.empty())
+            {
+                bool digits = true;
+
+                for (size_t i = 0; i < tok.size(); ++i)
+                {
+                    if (!isdigit((unsigned char)tok[i]))
+                    {
+                        digits = false;
+                        break;
+                    }
+                }
+
+                if (digits && atoi(tok.c_str()) == slot) return true;
+
+                if (!nm.empty() && NpcNameEquals(tok, nm)) return true;
+            }
+
+            p = q;
+        }
+    }
+
+    return false;
+}
+
+// 投票/点名的权重表：base 2 起步（无证据也有候选，绝不空表），再叠加：
+// 自己验出狼 +10；明跳预言家报狼 +6；当天聊天被点名/被 @ +4；
+// 聊天提及次数 ×2 且上限 +6。证据型高权重但不是必选——保留一定的
+// "不跟票"行为，不会让所有 NPC 决策完全同步
+inline vector<pair<int, int>> NpcVoteWeights(const NpcContext& ctx,
+                                             const vector<string>& lines, int self)
+{
+    vector<pair<int, int>> w;
+
+    auto addW = [&](int slot, int add)
+    {
+        if (slot == self) return;
+
+        // 只允许投给 Server 给的可选目标：聊到死人也不投（Server 会判非法弃权）
+        if (!NpcInTargets(ctx, slot)) return;
+
+        for (size_t i = 0; i < w.size(); ++i)
+        {
+            if (w[i].first == slot)
+            {
+                w[i].second += add;
+                return;
+            }
+        }
+
+        w.push_back(pair<int, int>(slot, add));
+    };
+
+    for (size_t i = 0; i < ctx.targets.size(); ++i)
+    {
+        if (ctx.targets[i] != self) w.push_back(pair<int, int>(ctx.targets[i], 2));
+    }
+
+    // 预言家自己验出的狼：最高可信度
+    if (NpcRole(ctx) == "seer")
+    {
+        vector<NpcCheckNote> notes = NpcParseCheckNotes(lines);
+
+        for (size_t i = 0; i < notes.size(); ++i)
+        {
+            if (notes[i].result.find("狼人") != string::npos) addW(notes[i].slot, 10);
+        }
+    }
+
+    // 明跳预言家报出的狼：公开信息，次高可信度
+    int claimed = NpcClaimedWolf(ctx, lines);
+
+    if (claimed != 0) addW(claimed, 6);
+
+    // 被点名的怀疑对象（查杀/可疑/怀疑行的名字）
+    static const char* susKws[] = { "查杀", "可疑", "怀疑" };
+    vector<int> sus;
+
+    NpcFindNameTargets(ctx, lines, susKws, 3, sus);
+
+    for (size_t i = 0; i < sus.size(); ++i) addW(sus[i], 4);
+
+    // 被 @ 与聊天提及热度：群众讨论本身就是线索分
+    for (int s = 1; s <= (int)ctx.names.size(); ++s)
+    {
+        if (s == self || ctx.names[s - 1].empty()) continue;
+
+        if (NpcAtMentioned(ctx, s)) addW(s, 4);
+
+        int m = NpcMentionCount(ctx, s);
+
+        if (m > 0) addW(s, min(m * 2, 6));
+    }
+
+    return w;
+}
+
+// 点一个加权随机怀疑对象（供发言模板点名；投票用同一张表保证口径一致）。
+// 返回槽号，0 表示无候选（模板走无目标分支）
+inline int NpcSuspectPick(const NpcContext& ctx, const vector<string>& lines, int self)
+{
+    vector<pair<int, int>> w = NpcVoteWeights(ctx, lines, self);
+
+    return NpcWeightedPick(w);
+}
+
+// 聊天高频话题词：统计角色词（狼/预言家/女巫/守卫/猎人/票/死/刀）与
+// 玩家名的出现次数，返回最高频者供「我觉得{词}那边有问题」类模板；
+// 无聊天返回空串。需要 ctx 才能把玩家名也纳入统计
+inline string NpcMentionTopic(const NpcContext& ctx)
+{
+    static const char* const words[] = {
+        "狼", "预言家", "女巫", "守卫", "猎人", "票", "死", "刀",
+    };
+    const size_t W = sizeof(words) / sizeof(words[0]);
+
+    // 角色词在前、玩家名在后共用一张计数表：角色词不套词边界
+    // （「狼人」应同时命中「狼」），玩家名必须独立词边界
+    vector<string> labels;
+    vector<bool> needBound;
+
+    for (size_t k = 0; k < W; ++k)
+    {
+        labels.push_back(words[k]);
+        needBound.push_back(false);
+    }
+
+    for (size_t s = 1; s <= (size_t)ctx.names.size(); ++s)
+    {
+        if ((int)s == NpcSelfIndex(ctx))
+        {
+            labels.push_back("");
+            needBound.push_back(true);
+        }
+        else
+        {
+            labels.push_back(ctx.names[s - 1]);
+            needBound.push_back(true);
+        }
+    }
+
+    vector<int> cnt(labels.size(), 0);
+
+    for (size_t li = 0; li < ctx.chatLog.size(); ++li)
+    {
+        const string& ln = ctx.chatLog[li];
+
+        for (size_t k = 0; k < labels.size(); ++k)
+        {
+            if (labels[k].empty()) continue;
+
+            size_t p = 0;
+
+            while ((p = ln.find(labels[k], p)) != string::npos)
+            {
+                if (!needBound[k] || NpcNameBoundaryOk(ln, p, labels[k])) ++cnt[k];
+
+                p += labels[k].size();
+            }
+        }
+    }
+
+    int bestIdx = -1;
+
+    for (size_t k = 0; k < cnt.size(); ++k)
+    {
+        if (cnt[k] > 0 && (bestIdx < 0 || cnt[k] > cnt[bestIdx])) bestIdx = (int)k;
+    }
+
+    if (bestIdx < 0) return "";
+
+    return labels[bestIdx];
+}
+
 // ============ 发言模板（每类 ≥5 变体随机） ============
 
 // 模板占位符填充：{n}=槽号 {name}=名字 {res}=验人结果 {role}=职业名。
@@ -731,8 +1155,9 @@ inline string NpcSeerReport(const string& n, const string& name, const string& r
     return NpcFill(V[NpcRandInt(0, 4)], n, name, res, "");
 }
 
-// 首日发言模板（5 变体随机；第一天没信息，只表水不带节奏）
-inline string NpcFirstDaySpeech(const string& selfName)
+// 首日发言模板（5 变体随机；第一天没信息，只表水不带节奏）。
+// topic 是聊天高频词：首日就出现话题词说明有人在带节奏，点一句留给后续观察
+inline string NpcFirstDaySpeech(const string& selfName, const string& topic = "")
 {
     static const char* const V[] = {
         "大家好，我是{name}。第一天先听发言，暂不投票。",
@@ -741,12 +1166,24 @@ inline string NpcFirstDaySpeech(const string& selfName)
         "我是好人阵营，建议今天认真听发言，别盲投。",
         "第一天先观察，谁的发言明显带节奏，我重点留意。",
     };
+    static const char* const TV[] = {
+        "我是{name}。第一天先听发言，我注意到{tp}的话题，暂不投票。",
+        "第一天信息少，先表水：我是好人。有人提{tp}，我先记一笔。",
+        "首日不急着出人，{tp}这事等有身份的人表态后再判断。",
+        "我是好人阵营，今天认真听发言。{tp}我这边先观察。",
+        "第一天先观察，{tp}的风向我会重点留意。",
+    };
 
-    return NpcFill(V[NpcRandInt(0, 4)], "", selfName, "", "");
+    if (topic.empty()) return NpcFill(V[NpcRandInt(0, 4)], "", selfName, "", "");
+
+    string s = NpcReplacePh(TV[NpcRandInt(0, 4)], "{tp}", topic);
+
+    return NpcReplacePh(s, "{name}", selfName);
 }
 
-// 表水/怀疑模板（5 变体随机，点名怀疑对象；无目标时用通用表水）
-inline string NpcSuspectSpeech(const string& name)
+// 表水/怀疑模板（5 变体随机，点名怀疑对象；无目标时用通用表水）。
+// topic 非空且无点名目标时：聊"话题本身"替代点名，避免永远没人带话题
+inline string NpcSuspectSpeech(const string& name, const string& topic = "")
 {
     static const char* const V[] = {
         "我觉得{name}发言不对劲，逻辑前后矛盾。",
@@ -754,6 +1191,13 @@ inline string NpcSuspectSpeech(const string& name)
         "{name}这轮发言很可疑，大家盯一下他的票型。",
         "我暂时怀疑{name}，还想再观察观察。",
         "听了这么久，{name}的嫌疑最大。",
+    };
+    static const char* const TV[] = {
+        "我觉得{tp}那边有问题，大家盯一下。",
+        "最近{tp}的讨论有点多，我怀疑这里藏着狼。",
+        "我重点关注{tp}，投票前大家再想想。",
+        "提到{tp}我就多留个心眼，先记一笔。",
+        "{tp}的风向太整齐了，我怕有人带节奏。",
     };
     static const char* const GV[] = {
         "这轮发言我没什么头绪，先站好人边。",
@@ -763,9 +1207,26 @@ inline string NpcSuspectSpeech(const string& name)
         "这轮先听别人的发言，我晚点给结论。",
     };
 
-    if (name.empty()) return GV[NpcRandInt(0, 4)];
+    if (!name.empty()) return NpcFill(V[NpcRandInt(0, 4)], "", name, "", "");
 
-    return NpcFill(V[NpcRandInt(0, 4)], "", name, "", "");
+    if (!topic.empty()) return NpcReplacePh(TV[NpcRandInt(0, 4)], "{tp}", topic);
+
+    return GV[NpcRandInt(0, 4)];
+}
+
+// 被 @ 时的回应模板（5 变体随机；直接答而不复读对方全文——
+// atTarget 里含「去头内容+完整原始行」，整段塞进发言会显得复读机）
+inline string NpcAtReply()
+{
+    static const char* const V[] = {
+        "收到，我来说说对这个点的看法。",
+        "既然有人点名我，我就着这个话题回应两句。",
+        "被@了，我表个态：先观察局势，不急着下结论。",
+        "好的，我针对这个点补充下意见，供大家参考。",
+        "回应一下刚提到我的发言：谨慎为上，再看票型。",
+    };
+
+    return V[NpcRandInt(0, 4)];
 }
 
 // 投票宣言模板（5 变体随机）
@@ -1039,32 +1500,27 @@ inline string NpcHunterShot(const NpcContext& ctx, const vector<string>& lines, 
     return "NIGHT_SHOOT|" + to_string(ctx.targets[NpcRandInt(0, (int)ctx.targets.size() - 1)]);
 }
 
-// 白天投票：有查杀证据投证据目标（预言家验狼>明跳预言家报狼>怀疑点名），
-// 没有证据就随机投存活者，15% 弃权——全随机或从不弃权都显得不自然
+// 白天投票：证据与聊天线索折算成权重表随机（权重越高越可能被投），
+// base 2 保证必有候选、证据 +10/+6 让清狼方向大概率但不必然被投，
+// 保留 15% 弃权——全随机或从不弃权都显得不自然
 inline string NpcDayVote(const NpcContext& ctx, const vector<string>& lines, int self)
 {
-    int sus = NpcPickSuspect(ctx, lines, self);
+    vector<pair<int, int>> w = NpcVoteWeights(ctx, lines, self);
 
-    if (sus != 0) return "VOTE|" + to_string(sus);
-
-    vector<int> pool;
-
-    for (size_t i = 0; i < ctx.targets.size(); ++i)
-    {
-        if (ctx.targets[i] != self) pool.push_back(ctx.targets[i]);
-    }
-
-    if (pool.empty()) return "VOTE|0";
+    if (w.empty()) return "VOTE|0";
 
     if (NpcRandChance(15)) return "VOTE|0";
 
-    return "VOTE|" + to_string(pool[NpcRandInt(0, (int)pool.size() - 1)]);
+    return "VOTE|" + to_string(NpcWeightedPick(w));
 }
 
-// 白天发言：预言家有验人记录就报验人（优先报验出的狼，否则报最近一次），
-// 有查杀证据就直接投票宣言，首日套首日模板，其余日子表水/怀疑点名
+// 白天发言：被 @ 优先回应（自由讨论的接话机制）；预言家有验人记录就报验人
+// （优先报验出的狼，否则报最近一次）；有查杀证据直接投票宣言；都没有就
+// 权重随机点名怀疑对象（含 base 2 必有候选），首日套首日模板，可带话题词
 inline string NpcDaySpeech(const NpcContext& ctx, const vector<string>& lines, int self)
 {
+    if (!ctx.atTarget.empty()) return "SPEECH|" + NpcAtReply();
+
     if (NpcRole(ctx) == "seer")
     {
         vector<NpcCheckNote> notes = NpcParseCheckNotes(lines);
@@ -1094,12 +1550,17 @@ inline string NpcDaySpeech(const NpcContext& ctx, const vector<string>& lines, i
         return "SPEECH|" + NpcVoteSpeech(NpcPlayerName(ctx, sus));
     }
 
+    // 无明确证据：权重随机点名（与投票同表），无候选退到话题词/通用表水
+    int ws = NpcSuspectPick(ctx, lines, self);
+    string wname = (ws != 0) ? NpcPlayerName(ctx, ws) : "";
+    string topic = NpcMentionTopic(ctx);
+
     if (NpcDayNumber(ctx) <= 1)
     {
-        return "SPEECH|" + NpcFirstDaySpeech(NpcPlayerName(ctx, self));
+        return "SPEECH|" + NpcFirstDaySpeech(NpcPlayerName(ctx, self), topic);
     }
 
-    return "SPEECH|" + NpcSuspectSpeech(NpcRandomSuspectName(ctx, self));
+    return "SPEECH|" + NpcSuspectSpeech(wname, topic);
 }
 
 // 遗言：报自己身份（中文职业名）+ 怀疑目标（有证据用证据，没有随机点名）
@@ -1405,6 +1866,7 @@ inline string NpcBuildSystemPrompt(const NpcContext& ctx)
     s += "守卫每晚守护一名玩家免遭狼刀（NIGHT_GUARD），不可连续两晚守同一人，-1=不守；";
     s += "猎人被放逐或被狼刀死亡时可开枪带走一名玩家（NIGHT_SHOOT，-1=不开枪）。";
     s += "白天存活玩家先发言讨论（SPEECH），再投票放逐一名玩家（VOTE，0=弃权）。";
+    s += "白天被其他玩家@点名时，SPEECH 应优先回应对方的问题或观点。";
     s += "输出要求：只输出严格一行 JSON：{\"action\":\"动作行\"}，不要输出任何其他文字。";
     s += "动作行只能是：SPEECH|发言内容（中文）/ VOTE|目标编号 / NIGHT_KILL|目标编号 / ";
     s += "NIGHT_CHECK|目标编号 / NIGHT_SAVE|目标编号 / NIGHT_POISON|目标编号 / ";
@@ -1442,9 +1904,137 @@ inline string NpcBuildUserText(const NpcContext& ctx)
     }
 
     s += "\n历史信息：\n" + ctx.history;
+
+    // 自由讨论上下文：被 @ 是全天最明确的提问，优先给模型；
+    // lastChat 覆盖之后新到的聊天，chatLog 只作摘要兜底
+    if (!ctx.atTarget.empty()) s += "\n有人@了你：" + ctx.atTarget;
+
+    if (!ctx.lastChat.empty()) s += "\n你上次发言后的新聊天：\n" + ctx.lastChat;
+
+    if (!ctx.chatLog.empty() && ctx.lastChat.empty())
+    {
+        s += "\n当天聊天（近 8 条）：";
+
+        size_t from = (ctx.chatLog.size() > 8) ? ctx.chatLog.size() - 8 : 0;
+
+        for (size_t i = from; i < ctx.chatLog.size(); ++i) s += "\n" + ctx.chatLog[i];
+    }
+
     s += "\n请根据以上信息输出你的动作（一行 JSON）。";
 
     return s;
+}
+
+// ============ API key 保护（需求 5.1） ============
+// key 来源优先级：env WOLF_NPC_API_KEY（测试注入用）> DPAPI 加密文件
+// npc_key.bin（进程工作目录即项目根）> 无 key。env 有 key 时顺手加密落盘，
+// 之后无 env 的启动也能读回同一把 key；解析结果 static 缓存只做一次 IO。
+// CryptProtectData 默认熵绑定当前用户，文件拷到别的用户/机器读不回，正好当作防泄露层
+
+// 加密 key 落盘：失败忽略（只读目录/权限不足都不能让在线决策崩掉）
+inline bool NpcKeySave(const string& key)
+{
+    DATA_BLOB in;
+
+    in.pbData = (BYTE*)key.data();
+    in.cbData = (DWORD)key.size();
+
+    DATA_BLOB out = { NULL, 0 };
+
+    if (!CryptProtectData(&in, L"wolf-npc", NULL, NULL, NULL, 0, &out)) return false;
+
+    HANDLE h = CreateFileA("npc_key.bin", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+
+    bool ok = false;
+
+    if (h != INVALID_HANDLE_VALUE)
+    {
+        DWORD written = 0;
+
+        ok = WriteFile(h, out.pbData, out.cbData, &written, NULL) && written == out.cbData;
+
+        CloseHandle(h);
+    }
+
+    LocalFree(out.pbData);
+
+    return ok;
+}
+
+// 读回加密 key：文件不存在/太小/解密失败一律返回空串（走无 key 提示路径）
+inline string NpcKeyLoad()
+{
+    HANDLE h = CreateFileA("npc_key.bin", GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) return "";
+
+    DWORD sz = GetFileSize(h, NULL);
+    string buf;
+
+    if (sz > 0 && sz < 4096)
+    {
+        buf.resize(sz);
+        DWORD read = 0;
+
+        if (ReadFile(h, &buf[0], sz, &read, NULL) && read == sz)
+        {
+            DATA_BLOB in;
+
+            in.pbData = (BYTE*)&buf[0];
+            in.cbData = sz;
+
+            DATA_BLOB out = { NULL, 0 };
+
+            if (CryptUnprotectData(&in, NULL, NULL, NULL, NULL, 0, &out))
+            {
+                string k((char*)out.pbData, out.cbData);
+
+                LocalFree(out.pbData);
+                CloseHandle(h);
+
+                return k;
+            }
+        }
+    }
+
+    CloseHandle(h);
+
+    return "";
+}
+
+// key 解析总入口（static 缓存；env > 加密文件 > 空）。返回空串由调用方
+// 提示「未配置 AI key，在线 NPC 回退离线决策」并直接走离线逻辑
+inline string NpcResolveKey()
+{
+    static string cached;
+    static bool resolved = false;
+
+    if (resolved) return cached;
+
+    resolved = true;
+
+    string k = NpcEnvOr("WOLF_NPC_API_KEY", "");
+
+    if (!k.empty())
+    {
+        // env 是一次性注入来源，落盘后后续启动不再依赖外部环境
+        NpcKeySave(k);
+        cached = k;
+
+        return cached;
+    }
+
+    cached = NpcKeyLoad();
+
+    return cached;
+}
+
+// 是否有可用 key（Server 在调在线决策前先问，避免无 key 白等一轮网络超时）
+inline bool NpcKeyAvailable()
+{
+    return !NpcResolveKey().empty();
 }
 
 // 在线决策总入口：读环境变量覆盖（URL/KEY/超时/重试次数），组装请求体，
@@ -1454,10 +2044,14 @@ inline string NpcOnlineDecide(const NpcContext& ctx)
 {
     string url = NpcEnvOr("WOLF_NPC_API_URL",
                           "https://open.bigmodel.cn/api/paas/v4/chat/completions");
-    string key = NpcEnvOr("WOLF_NPC_API_KEY",
-                          "698067a2633e4863a587fd029c0ae9fe.8rS6QIbcRMxatfeL");
-    int timeoutSec = NpcEnvInt("WOLF_NPC_TIMEOUT_SECONDS", 15, 1, 60);
-    int retries = NpcEnvInt("WOLF_NPC_RETRIES", 2, 0, 5);
+
+    // key 不写死在源码：env > DPAPI 文件，都没有就回退离线（调用方已提示）
+    string key = NpcResolveKey();
+
+    if (key.empty()) return "";
+
+    int timeoutSec = NpcEnvInt("WOLF_NPC_TIMEOUT_SECONDS", 10, 1, 60);
+    int retries = NpcEnvInt("WOLF_NPC_RETRIES", 1, 0, 5);
 
     string body = "{\"model\":\"glm-4.7-flash\",\"messages\":[{\"role\":\"system\",\"content\":\""
         + NpcJsonEscape(NpcBuildSystemPrompt(ctx)) + "\"},{\"role\":\"user\",\"content\":\""

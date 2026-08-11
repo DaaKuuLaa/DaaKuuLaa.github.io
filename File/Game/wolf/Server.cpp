@@ -1,9 +1,11 @@
 // Server.cpp - 狼人杀：单局游戏服务器（每局游戏一个进程，由 Start.exe 启动）
 //
-// 命令行参数（尾部固定 8 个 + 变长玩家名 + N 个语言码）：
-//   Server.exe <gamePort> "<name1>" ... "<nameN>" <startIp> <startPort> <roomId> <W> <N> <G> <level> <villager> <lang1> ... <langN>
+// 命令行参数（尾部固定 8 个 + 变长玩家名 + N 个语言码 [+ 可选禁言段]）：
+//   Server.exe <gamePort> "<name1>" ... "<nameN>" <startIp> <startPort> <roomId> <W> <N> <G> <level> <villager> <lang1> ... <langN> [--mutes <mute1> <mute2> ...]
 //   倒数第 N+8..N+1 个参数为 startIp/startPort/roomId/W/N/G/level/villager，
 //   最后 N 个为与玩家名一一对应的语言码（zh/en，顺序即槽位 1..N，需求 §12.1）。
+//   --mutes 段（需求 §20.4）为可选：标记后全部参数进禁言名单（名字或含
+//   * / ? 的通配模式，均不含空格）；名字白名单不含连字符，标记无歧义。
 //
 // 线程分工：
 //   主线程   ：开黑身份分配 → 昼夜交替主循环 → 胜负结算
@@ -99,6 +101,10 @@ struct Player
 };
 vector<Player> g_players;           // 下标 1..g_numPlayers，槽 0 不用
 
+// 禁言名单（需求 §20.4）：由命令行 --mutes 段解析（精确名或含 * / ? 的通配
+// 模式）；全局生效，断线重连后仍拦截白天发言。游戏期间只增不删（随进程销毁）
+vector<string> g_mutes;
+
 // 丘比特选定的情侣（槽号 1..N；-1 表示本局没有情侣）
 int g_loverA = -1;
 int g_loverB = -1;
@@ -111,7 +117,8 @@ vector<string> g_seerCheckNotes;  // 验人记录中文摘要（"第N夜查验X�
 vector<string> g_deathNotes;      // 死亡记录中文摘要（"X号A已死亡（被狼人击杀）。"）
 vector<string> g_wolfKillNotes;   // 狼队刀人记录中文摘要（"第N夜刀杀X号A。"）
 
-// 当前夜晚编号（从 1 开始）——女巫只有首夜可自救
+// 当前夜晚编号（从 1 开始）——NPC 决策上下文等按夜区分，与女巫自救限制无关
+//（§20.1 已取消首夜自救限制，任何夜晚被刀含自己均可救）
 int g_night = 0;
 
 // 是否因断线/超时中止本局（正常结束由胜负判定接管）
@@ -1189,6 +1196,32 @@ int CountAliveGood()
     return n;
 }
 
+// 存活神职数（屠边判定用，只数存活）
+int CountAliveGod()
+{
+    int n = 0;
+
+    for (int i = 1; i <= g_numPlayers; ++i)
+    {
+        if (g_players[i].alive && JOBS[g_players[i].jobId].camp == CAMP_GOD) ++n;
+    }
+
+    return n;
+}
+
+// 存活村民数（屠边判定用，只数存活）
+int CountAliveVillager()
+{
+    int n = 0;
+
+    for (int i = 1; i <= g_numPlayers; ++i)
+    {
+        if (g_players[i].alive && JOBS[g_players[i].jobId].camp == CAMP_VILLAGER) ++n;
+    }
+
+    return n;
+}
+
 // 查找指定职业的存活槽位；-1 表示没有
 int FindAliveJob(int jobId)
 {
@@ -1199,6 +1232,215 @@ int FindAliveJob(int jobId)
 
     return -1;
 }
+
+// ============ 禁言名单判定（需求 §20.4） ============
+
+// glob 模式匹配：* 任意长度（含 0），? 恰好 1 位，ASCII 大小写不敏感。
+// 与 Start.cpp 同款动态规划迭代版（无递归爆栈），逐字节匹配语义一致
+bool GlobMatch(const string& pattern, const string& text)
+{
+    vector<bool> prev(text.size() + 1, false);
+    vector<bool> cur(text.size() + 1, false);
+    prev[0] = true;
+
+    for (char pc : pattern)
+    {
+        cur.assign(text.size() + 1, false);
+
+        if (pc == '*') cur[0] = prev[0];
+
+        for (size_t i = 0; i < text.size(); ++i)
+        {
+            unsigned char tc = (unsigned char)text[i];
+
+            if (pc == '*')
+            {
+                cur[i + 1] = prev[i + 1] || cur[i];
+            }
+            else if (pc == '?')
+            {
+                cur[i + 1] = prev[i];
+            }
+            else
+            {
+                unsigned char pp = (unsigned char)pc;
+
+                if (pp >= 'A' && pp <= 'Z') pp += 32;
+                if (tc >= 'A' && tc <= 'Z') tc += 32;
+
+                cur[i + 1] = (pp == tc) && prev[i];
+            }
+        }
+
+        prev = cur;
+    }
+
+    return prev[text.size()];
+}
+
+// 槽位是否命中禁言名单：含通配的模式走 GlobMatch，精确名走 NameEquals
+//（两者均大小写不敏感；NPC 与真人一视同仁，命中即不广播发言）
+bool IsMuted(int slot)
+{
+    if (slot < 1 || slot > g_numPlayers) return false;
+
+    for (const string& pat : g_mutes)
+    {
+        if (pat.find('*') != string::npos || pat.find('?') != string::npos)
+        {
+            if (GlobMatch(pat, g_players[slot].name)) return true;
+        }
+        else if (NameEquals(pat, g_players[slot].name))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// ============ 聊天历史 / 白天讨论节拍 / 状态记忆库（NPC 自由讨论） ============
+
+// 全游戏聊天历史（近 60 条，格式「名字：内容」，含投票广播不是原样照抄真人
+// 聊天——NPC 决策与话题统计都以它为输入）。开局清零；超出上限丢最旧的
+const size_t CHAT_LOG_CAP = 60;
+vector<string> g_chatLog;
+
+// 本白天聊天历史：ctx.chatLog 全量喂给决策（当天讨论节的提及权重需要全量，
+// BuildNpcHistory 只摘要最近 8 条），白天结束时清空
+vector<string> g_dayChatLog;
+
+// 聊天/投票行统一入库：超限丢头，白天行同时进当天表
+void AppendChatLine(const string& line)
+{
+    if (g_chatLog.size() >= CHAT_LOG_CAP) g_chatLog.erase(g_chatLog.begin());
+
+    g_chatLog.push_back(line);
+    g_dayChatLog.push_back(line);
+}
+
+// 全局游戏状态摘要（决策记忆库）：跨阶段的刀/死/验/投票/放逐等事件，
+// 尾部追加、超限裁头部——历史越久越旧，保留最新对决策更有用
+string g_stateMemory;
+const size_t STATE_MEMORY_CAP = 8000;
+
+void MemRecord(const string& text)
+{
+    string tag = "第" + to_string(g_night) + "夜/天";
+
+    g_stateMemory += "[" + tag + "] " + text + "\n";
+
+    if (g_stateMemory.size() > STATE_MEMORY_CAP)
+    {
+        g_stateMemory.erase(0, g_stateMemory.size() - STATE_MEMORY_CAP);
+    }
+}
+
+// 状态记忆落盘：每阶段（夜/白天）结束各写一次 npc_memory.txt（工作目录），
+// 低频写入失败忽略——这只是参考资料，不能因为存不下让游戏流程失败
+void SaveStateMemory()
+{
+    HANDLE h = CreateFileA("npc_memory.txt", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) return;
+
+    DWORD written = 0;
+
+    WriteFile(h, g_stateMemory.c_str(), (DWORD)g_stateMemory.size(), &written, NULL);
+
+    CloseHandle(h);
+}
+
+// 每个 NPC 的白天讨论节拍状态：上次发言时刻（节流 1.5s）、已消费的聊天条数、
+// 本白天发言次数（1 开场 + 至多 3 补充）、待回应的被 @ 文本
+struct NpcChatState
+{
+    chrono::steady_clock::time_point lastSpeech;
+    size_t chatSeen = 0;      // g_chatLog 里已"看见"的条数（发言后推进）
+    int speechCount = 0;      // 本白天已发言次数（开场计入 1）
+    string atTarget;          // 被 @ 的待回应文本（回应后清空）
+};
+NpcChatState g_npcChat[MAX_PLAYERS];
+
+// 白天开始重置所有 NPC 的节拍状态；已读进度直接对齐到当前聊天条数，
+// 昨天的旧聊天不算"新内容"，否则开局第一天所有 NPC 会同时炸出声
+void ResetNpcDayState()
+{
+    auto now = chrono::steady_clock::now();
+
+    for (int i = 1; i <= g_numPlayers; ++i)
+    {
+        g_npcChat[i] = NpcChatState();
+        g_npcChat[i].lastSpeech = now;
+        g_npcChat[i].chatSeen = g_chatLog.size();
+    }
+
+    g_dayChatLog.clear();
+}
+
+// 解析白天聊天行开头的 @ 前缀（需求：@名字或槽号 + 空格 + 内容）。
+// 返回 0=未命中 @（普通聊天）；>0=目标槽号；失败/目标是自己一律按普通聊天
+int ParseAtTarget(const string& content, int speakerSlot, string& stripped)
+{
+    if (content.empty() || content[0] != '@') return 0;
+
+    size_t sp = content.find(' ');
+
+    // @ 后必须有名 + 空格 + 内容三段齐全，缺一不可
+    if (sp == string::npos || sp + 1 >= content.size()) return 0;
+
+    string tok = content.substr(1, sp - 1);
+
+    if (tok.empty()) return 0;
+
+    stripped = content.substr(sp + 1);
+
+    if (stripped.empty()) return 0;
+
+    // 数字 = 槽号（1 基）；槽号非法或指向自己 → 普通聊天
+    bool allDigits = true;
+
+    for (size_t i = 0; i < tok.size(); ++i)
+    {
+        if (!isdigit((unsigned char)tok[i]))
+        {
+            allDigits = false;
+            break;
+        }
+    }
+
+    if (allDigits)
+    {
+        int s = atoi(tok.c_str());
+
+        if (s >= 1 && s <= g_numPlayers && !g_players[s].name.empty() && s != speakerSlot)
+        {
+            return s;
+        }
+
+        return 0;
+    }
+
+    // 名字按 NameEquals 匹配（大小写不敏感，与全局名字规则一致）
+    for (int i = 1; i <= g_numPlayers; ++i)
+    {
+        if (g_players[i].name.empty()) continue;
+
+        if (NameEquals(tok, g_players[i].name))
+        {
+            if (i == speakerSlot) return 0;
+
+            return i;
+        }
+    }
+
+    return 0;
+}
+
+// 已广播过「AI 分析中」等待提示的（夜晚号,阶段名）组合：每阶段只提示一次，
+// 防后续多个在线 NPC 同一阶段的等待提示刷屏
+vector<pair<int, string>> g_npcWaitHinted;
 
 // ============ NPC 决策组装与调用（需求 §19.7） ============
 
@@ -1250,13 +1492,34 @@ string BuildNpcHistory(int slot, const string& phase, const string& extra)
 
     if (!extra.empty()) h += "线索：" + extra + "。";
 
+    // 近期聊天摘要（最近 8 条）：给 NPC 当前讨论的即时常态；
+    // 本白天全量仍在 ctx.chatLog 里，这里只做历史文本的轻量补充
+    if (!g_chatLog.empty())
+    {
+        h += "近期聊天：";
+
+        size_t from = (g_chatLog.size() > 8) ? g_chatLog.size() - 8 : 0;
+
+        for (size_t i = from; i < g_chatLog.size(); ++i) h += "\n" + g_chatLog[i];
+    }
+
+    // 状态记忆库放在历史最末：跨阶段的刀/死/验/投票等长记忆，
+    // 模型最后的输入最容易被采用
+    if (!g_stateMemory.empty()) h += "\n状态记忆：" + g_stateMemory;
+
     return h;
 }
 
 // 取 NPC 决策动作行：在线 NPC 先调 NpcOnlineDecide（同步阻塞，失败/超时返回
 // 空串），空串回退 NpcOfflineDecide；离线 NPC 直接走离线逻辑。决策模块内部
 // 异常不得中断游戏主流程，一律 catch 后回退。NPC 语言固定中文（需求 §19.7）。
-string NpcGetAction(int slot, const string& phase, const vector<int>& targets, const string& extra)
+// dayChat/atTarget/lastChat 是白天自由讨论上下文（见节拍机制 NpcDiscussionBeat），
+// 夜晚/投票等旧调用点走默认空参不受影响
+string NpcGetAction(int slot, const string& phase, const vector<int>& targets,
+                     const string& extra,
+                     const vector<string>& dayChat = vector<string>(),
+                     const string& atTarget = "",
+                     const string& lastChat = "")
 {
     if (!IsNpc(slot)) return "NONE";
 
@@ -1275,12 +1538,57 @@ string NpcGetAction(int slot, const string& phase, const vector<int>& targets, c
     ctx.targets = targets;
     ctx.history = BuildNpcHistory(slot, phase, extra);
     ctx.lang = Lang::Zh;
+    ctx.chatLog = dayChat;
+    ctx.atTarget = atTarget;
+    ctx.lastChat = lastChat;
 
     string action;
 
     try
     {
-        if (g_players[slot].npcType == 1) action = NpcOnlineDecide(ctx);
+        if (g_players[slot].npcType == 1)
+        {
+            // 无 key 不发请求：在线决策是同步阻塞，没有 key 白等一轮网络超时
+            // 毫无价值，直接回退离线；提示只打一次 server.log，防刷屏
+            if (!NpcKeyAvailable())
+            {
+                static bool keyWarned = false;
+
+                if (!keyWarned)
+                {
+                    keyWarned = true;
+                    Log("未配置 AI key，在线 NPC 回退离线决策");
+                }
+            }
+            else
+            {
+                // 同步阻塞前的等待提示：按（夜晚号,阶段名）组合键每阶段只发一次，
+                // 夜晚号随新夜递增、白天阶段名与夜晚不同，天然不会跨阶段串刷屏
+                pair<int, string> key(g_night, phase);
+                bool hinted = false;
+
+                for (size_t i = 0; i < g_npcWaitHinted.size(); ++i)
+                {
+                    if (g_npcWaitHinted[i] == key)
+                    {
+                        hinted = true;
+                        break;
+                    }
+                }
+
+                if (!hinted)
+                {
+                    g_npcWaitHinted.push_back(key);
+
+                    int tm = NpcEnvInt("WOLF_NPC_TIMEOUT_SECONDS", 10, 1, 60);
+
+                    SendToAllL10n("AI 分析中，请稍候…（最多约 %d 秒）",
+                                  "AI thinking, please wait (up to %d seconds)…", tm);
+                }
+
+                action = NpcOnlineDecide(ctx);
+            }
+        }
 
         if (action.empty()) action = NpcOfflineDecide(ctx);
     }
@@ -1299,6 +1607,67 @@ string NpcGetAction(int slot, const string& phase, const vector<int>& targets, c
 
     GLog("NPC decision slot=" + to_string(slot) + " phase=" + phase + " action=[" + action + "]");
     return action;
+}
+
+// 白天自由讨论节拍：轮询循环每 100ms 检查一次（含静默轮）。每个存活 NPC
+// 距上次发言 ≥1.5s 且（被 @ 或 有新聊天）→ 生成回应发言广播；每白天
+// 至多 1 次开场（DayPhase 已发）+ 3 次补充。在线决策同步阻塞，节拍间隔
+// 由 lastSpeech 保证，没有新内容绝不重复调模型
+void NpcDiscussionBeat()
+{
+    auto now = chrono::steady_clock::now();
+
+    for (int i = 1; i <= g_numPlayers; ++i)
+    {
+        if (!g_players[i].alive || !IsNpc(i)) continue;
+
+        NpcChatState& st = g_npcChat[i];
+
+        if (st.speechCount >= 4) continue;
+
+        // 间隔硬约束：在线模型同步阻塞，紧贴触发会连发多个请求排队等死
+        if (now - st.lastSpeech < chrono::milliseconds(1500)) continue;
+
+        bool hasNewChat = (st.chatSeen < g_chatLog.size());
+
+        if (st.atTarget.empty() && !hasNewChat) continue;
+
+        // 本次发言可见的新聊天：自上次发言后的新增拼接，限 400 字防 prompt 膨胀
+        string lastChat;
+
+        for (size_t k = st.chatSeen; k < g_chatLog.size(); ++k)
+        {
+            lastChat += g_chatLog[k];
+            lastChat += "\n";
+        }
+
+        if (lastChat.size() > 400) lastChat = lastChat.substr(lastChat.size() - 400);
+
+        st.chatSeen = g_chatLog.size();
+
+        // 禁言 NPC：不发言也不调模型（调了也不广播），配额与已读进度照常消耗，
+        // 否则每轮节拍都在白问模型
+        if (IsMuted(i))
+        {
+            ++st.speechCount;
+            st.lastSpeech = now;
+            st.atTarget.clear();
+            continue;
+        }
+
+        string content = ParseNpcSpeech(NpcGetAction(i, "day_speech", vector<int>(), "",
+                                                     g_dayChatLog, st.atTarget, lastChat));
+
+        // 无论是否生成成功都消耗配额：失败重试只会无限刷模型
+        st.atTarget.clear();
+        ++st.speechCount;
+        st.lastSpeech = now;
+
+        if (!content.empty())
+        {
+            SendToAll(g_players[i].name + "：" + SanitizeChat(content));
+        }
+    }
 }
 
 // ============ 死亡处理（含情侣殉情、猎人开枪） ============
@@ -1568,7 +1937,10 @@ bool SetupCupid()
         random_shuffle(cand.begin(), cand.end());
         g_loverA = cand[0];
         g_loverB = cand[1];
-        SendToAllL10n("丘比特为玩家%s 与玩家%s 结成了情侣。", "Cupid paired %s with %s as lovers.", g_players[g_loverA].name.c_str(), g_players[g_loverB].name.c_str());
+        // 情侣名单属情报，只私发丘比特本人（需求 §20.2，防旁观者从广播泄底）
+        SendToClientL10nPair(cupid,
+            "丘比特为玩家" + g_players[g_loverA].name + " 与玩家" + g_players[g_loverB].name + " 结成了情侣。",
+            "Cupid paired " + g_players[g_loverA].name + " with " + g_players[g_loverB].name + " as lovers.");
         return true;
     }
 
@@ -1597,7 +1969,10 @@ bool SetupCupid()
 
         g_loverA = a;
         g_loverB = b;
-        SendToAllL10n("丘比特为玩家%s 与玩家%s 结成了情侣。", "Cupid paired %s with %s as lovers.", g_players[a].name.c_str(), g_players[b].name.c_str());
+        // 情侣名单只私发丘比特本人（需求 §20.2，同上 NPC 分支）
+        SendToClientL10nPair(cupid,
+            "丘比特为玩家" + g_players[a].name + " 与玩家" + g_players[b].name + " 结成了情侣。",
+            "Cupid paired " + g_players[a].name + " with " + g_players[b].name + " as lovers.");
         return true;
     }
 }
@@ -1610,10 +1985,10 @@ bool SetupThief()
     if (thief < 0) return true;
 
     // NPC 盗贼：决策模块无盗贼动作行，按本地默认保持原身份（不换牌），
-    // 否则开局会永远卡在等输入上
+    // 否则开局会永远卡在等输入上；结果只私发盗贼本人（需求 §20.2）
     if (IsNpc(thief))
     {
-        SendToAllL10nPair(
+        SendToClientL10nPair(thief,
             "盗贼" + g_players[thief].name + " 选择保持原身份。",
             "Thief " + g_players[thief].name + " kept the original role.");
         return true;
@@ -1656,7 +2031,8 @@ bool SetupThief()
         SendToClientL10nPair(thief,
             "你选择了：" + string(JOBS[chosen].zhName) + "。",
             "You chose: " + string(JOBS[chosen].enName) + ".");
-        SendToAllL10nPair(
+        // 换牌结果只私发盗贼本人（需求 §20.2：原身份与所换身份都不应公开）
+        SendToClientL10nPair(thief,
             "盗贼" + g_players[thief].name + " 选择了新身份：" + string(JOBS[chosen].zhName) + "。",
             "Thief " + g_players[thief].name + " chose a new role: " + string(JOBS[chosen].enName) + ".");
         return true;
@@ -1840,13 +2216,21 @@ bool AskSeer()
     // 验人结果入库供预言家 NPC 后续决策（只对预言家身份可见，需求 §19.7）
     g_seerCheckNotes.push_back("第" + to_string(g_night) + "夜查验" + to_string(t) + "号" + g_players[t].name
         + "：" + CampLabel(g_players[t].jobId, Lang::Zh) + "。");
+
+    // 状态记忆库记录验人（需求：决策记忆含每晚行动结果）
+    MemRecord("预言家查验" + to_string(t) + "号" + g_players[t].name + "："
+              + CampLabel(g_players[t].jobId, Lang::Zh));
+
     return true;
 }
 
-// 女巫：先救（0=不用，首夜可自救）后毒（0/任意存活玩家）
-// 解药毒药各限一次，同一夜不可双用
-// wolfTarget 仅用于 NPC 决策上下文（女巫本应知道当夜被刀者），真人路径不变
-bool AskWitch(int wolfTarget, int& saveTarget, int& poisonTarget)
+// 女巫（需求 §20.1 流程重排）：
+// - 取消「首夜自救」限制：任何夜晚被刀（含自己）都能用解药救
+// - 解药毒药全局各一次，每晚至多使用一种；用过即永久失效
+// - 真人路径：先告知本晚实际被刀者（守卫挡刀视为无人被刀），再依次问救/毒；
+//   毒药目标支持槽号或名字（非数字按 NameEquals 匹配存活玩家）
+// - NPC 分支决策策略不变，只同步删除首夜自救限制保证规则一致
+bool AskWitch(int wolfTarget, int guardTarget, int& saveTarget, int& poisonTarget)
 {
     saveTarget = 0;
     poisonTarget = 0;
@@ -1855,13 +2239,17 @@ bool AskWitch(int wolfTarget, int& saveTarget, int& poisonTarget)
 
     if (witch < 0) return true;
 
+    // 本晚实际被刀者：守卫挡刀时狼刀不生效，无救人对象（与 ResolveNight
+    // 结算顺序一致：被守者在无解药时不死、守+救冲突才判死）
+    bool hit = (wolfTarget >= 1 && wolfTarget <= g_numPlayers && guardTarget != wolfTarget);
+
     bool saved = false;
 
-    // 解药
-    if (!g_players[witch].witchSaveUsed)
+    if (IsNpc(witch))
     {
-        // NPC 女巫：即时生成 NIGHT_SAVE|i（-1 不用解药），非法目标按不用处理
-        if (IsNpc(witch))
+        // 解药：NPC 即时生成 NIGHT_SAVE|i（-1 不用解药），非法目标按不用处理；
+        // 首夜自救判定已随规则取消（任何夜晚可自救）
+        if (!g_players[witch].witchSaveUsed)
         {
             string extra;
 
@@ -1880,8 +2268,7 @@ bool AskWitch(int wolfTarget, int& saveTarget, int& poisonTarget)
 
             if (t == -1) t = 0;
 
-            if (t == 0 || !(t >= 1 && t <= g_numPlayers && g_players[t].alive
-                && (t != witch || g_night == 1)))
+            if (!(t == 0 || (t >= 1 && t <= g_numPlayers && g_players[t].alive)))
             {
                 t = 0;
             }
@@ -1893,47 +2280,9 @@ bool AskWitch(int wolfTarget, int& saveTarget, int& poisonTarget)
                 saved = true;
             }
         }
-        else
-        {
-            while (true)
-            {
-                string in;
 
-                if (!AskChoiceL10n(witch - 1,
-                    "你是女巫，是否使用解药？\n（输入目标编号，首夜可自救；0 不使用）：",
-                    "You are the Witch. Use the antidote?\n(enter a target, self-save only on night 1; 0 = no):", in)) return false;
-
-                int t = atoi(in.c_str());
-
-                if (t == 0) break;
-
-                if (t >= 1 && t <= g_numPlayers && g_players[t].alive)
-                {
-                    if (t == witch && g_night > 1)
-                    {
-                        SendToClientL10n(witch, "只有首夜可以自救，请重新输入。", "You can only save yourself on night 1. Try again.");
-                        continue;
-                    }
-
-                    saveTarget = t;
-                    g_players[witch].witchSaveUsed = true;
-                    saved = true;
-                    break;
-                }
-
-                SendToClientL10n(witch, "目标不合法：必须是 1..N 的存活玩家或 0。", "Invalid target: an alive player 1..N or 0.");
-            }
-        }
-    }
-
-    // 同一夜不可双用：已用解药则不再给毒药
-    if (saved) return true;
-
-    // 毒药
-    if (!g_players[witch].witchPoisonUsed)
-    {
-        // NPC 女巫：即时生成 NIGHT_POISON|i（-1 不用毒），非法目标按不用处理
-        if (IsNpc(witch))
+        // 毒药：同夜已救不再问毒（二选一）
+        if (!saved && !g_players[witch].witchPoisonUsed)
         {
             int t = ParseNpcTarget(
                 NpcGetAction(witch, "night_poison", AliveTargetList(witch), ""),
@@ -1952,28 +2301,143 @@ bool AskWitch(int wolfTarget, int& saveTarget, int& poisonTarget)
                 g_players[witch].witchPoisonUsed = true;
             }
         }
-        else
+
+        return true;
+    }
+
+    // 1) 开场专属提示：只私发女巫本人，保留“你是女巫”锚点行
+    //    （round4 C9 断言此行的职业专属分发；双语成对）
+    SendToClientL10nPair(witch,
+        "你是女巫，今夜可以救人或毒人。",
+        "You are the Witch. Tonight you may save or poison.");
+
+    // 2) 告知本晚被刀者（只私发女巫本人，双语成对）
+    if (hit)
+    {
+        SendToClientL10nPair(witch,
+            to_string(wolfTarget) + "号（" + g_players[wolfTarget].name + "）被狼人刀了。",
+            "Slot " + to_string(wolfTarget) + " (" + g_players[wolfTarget].name + ") was killed by the wolves.");
+    }
+    else
+    {
+        SendToClientL10nPair(witch, "今晚无人被刀。", "Nobody was killed tonight.");
+    }
+
+    // 双药均已使用：合并提示一次后直接结束女巫阶段
+    if (g_players[witch].witchSaveUsed && g_players[witch].witchPoisonUsed)
+    {
+        SendToClientL10nPair(witch, "解药与毒药均已使用。", "Both the antidote and the poison have been used.");
+        return true;
+    }
+
+    // 3) 解药：已用提示跳过；无人被刀时没有可救对象，不问
+    if (g_players[witch].witchSaveUsed)
+    {
+        SendToClientL10nPair(witch, "解药已使用。", "The antidote has been used.");
+    }
+    else if (hit)
+    {
+        while (true)
+        {
+            string in;
+
+            if (!AskChoiceL10n(witch - 1, "是否使用解药？（1 救 0 不救）：", "Use the antidote? (1 = yes, 0 = no):", in)) return false;
+
+            if (in == "1")
+            {
+                saveTarget = wolfTarget;
+                g_players[witch].witchSaveUsed = true;
+                saved = true;
+                break;
+            }
+
+            if (in == "0") break;
+
+            SendToClientL10n(witch, "请输入 1 或 0。", "Enter 1 or 0.");
+        }
+    }
+
+    // 同一夜不可双用：已用解药则不再给毒药
+    if (saved) return true;
+
+    // 3) 毒药：已用提示跳过；未用先问 1/0 再收目标（槽号或名字）
+    if (g_players[witch].witchPoisonUsed)
+    {
+        SendToClientL10nPair(witch, "毒药已使用。", "The poison has been used.");
+    }
+    else
+    {
+        bool wantPoison = false;
+
+        while (true)
+        {
+            string in;
+
+            if (!AskChoiceL10n(witch - 1, "是否使用毒药？（1 用 0 不用）：", "Use the poison? (1 = yes, 0 = no):", in)) return false;
+
+            if (in == "1")
+            {
+                wantPoison = true;
+                break;
+            }
+
+            if (in == "0") break;
+
+            SendToClientL10n(witch, "请输入 1 或 0。", "Enter 1 or 0.");
+        }
+
+        if (wantPoison)
         {
             while (true)
             {
                 string in;
 
-                if (!AskChoiceL10n(witch - 1,
-                    "你是女巫，是否使用毒药？（输入目标编号；0 不使用）：",
-                    "You are the Witch. Use the poison? (enter a target; 0 = no):", in)) return false;
+                if (!AskChoiceL10n(witch - 1, "请输入毒药目标（槽号或名字）：", "Enter the poison target (slot number or name):", in)) return false;
 
-                int t = atoi(in.c_str());
+                // 数字串先按槽号解释；数字不是存活的合法槽位时再按名字匹配
+                bool allDigits = !in.empty();
 
-                if (t == 0) break;
-
-                if (t >= 1 && t <= g_numPlayers && g_players[t].alive)
+                for (char c : in)
                 {
-                    poisonTarget = t;
+                    if (!isdigit((unsigned char)c))
+                    {
+                        allDigits = false;
+                        break;
+                    }
+                }
+
+                if (allDigits)
+                {
+                    int t = atoi(in.c_str());
+
+                    if (t >= 1 && t <= g_numPlayers && g_players[t].alive)
+                    {
+                        poisonTarget = t;
+                        g_players[witch].witchPoisonUsed = true;
+                        break;
+                    }
+                }
+
+                // 非数字入口：按名字大小写不敏感匹配存活玩家
+                int byName = -1;
+
+                for (int i = 1; i <= g_numPlayers; ++i)
+                {
+                    if (g_players[i].alive && NameEquals(g_players[i].name, in))
+                    {
+                        byName = i;
+                        break;
+                    }
+                }
+
+                if (byName >= 1)
+                {
+                    poisonTarget = byName;
                     g_players[witch].witchPoisonUsed = true;
                     break;
                 }
 
-                SendToClientL10n(witch, "目标不合法：必须是 1..N 的存活玩家或 0。", "Invalid target: an alive player 1..N or 0.");
+                SendToClientL10n(witch, "毒药目标不合法：必须是存活玩家的槽号或名字。请重新输入。", "Invalid poison target: an alive player's slot number or name. Try again.");
             }
         }
     }
@@ -2011,11 +2475,19 @@ bool ResolveNight(int guardTarget, int wolfTarget, int saveTarget, int poisonTar
     if (deaths.empty())
     {
         SendToAllL10n("平安夜，昨夜无人死亡。", "Peaceful night. No one died.");
+
+        MemRecord("平安夜，无人死亡");
+
         return true;
     }
 
     for (auto& d : deaths)
     {
+        // 死因入记忆库：狼刀/毒杀之分对 NPC 后续分析有不同含义
+        string cause = (d.second == "poison") ? "被毒杀" : "被狼人击杀";
+
+        MemRecord(g_players[d.first].name + "死亡（" + cause + "）");
+
         KillPlayer(d.first, d.second);
     }
 
@@ -2045,6 +2517,11 @@ bool NightPhase()
         if (guardTarget == -2) return false;
 
         g_players[guardSlot].guardLast = guardTarget;
+
+        if (guardTarget >= 1)
+        {
+            MemRecord("守卫守护" + to_string(guardTarget) + "号" + g_players[guardTarget].name);
+        }
     }
 
     // 狼人归票
@@ -2060,6 +2537,9 @@ bool NightPhase()
     if (wolfTarget >= 1 && wolfTarget <= g_numPlayers)
     {
         g_wolfKillNotes.push_back("第" + to_string(g_night) + "夜刀杀" + to_string(wolfTarget) + "号" + g_players[wolfTarget].name + "。");
+
+        // 刀人入状态记忆：女巫是否救助由 ResolveNight 死者名单反推
+        MemRecord("狼人刀" + to_string(wolfTarget) + "号" + g_players[wolfTarget].name);
     }
 
     // 预言家（职业不在场则不广播该段开场）
@@ -2079,12 +2559,15 @@ bool NightPhase()
         SendToAllL10n("女巫请睁眼。", "Witch, open your eyes.");
     }
 
-    if (!AskWitch(wolfTarget, saveTarget, poisonTarget)) return false;
+    if (!AskWitch(wolfTarget, guardTarget, saveTarget, poisonTarget)) return false;
 
     // 结算
     SendToAllL10n("天亮了……", "Dawn...");
 
     if (!ResolveNight(guardTarget, wolfTarget, saveTarget, poisonTarget)) return false;
+
+    // 夜晚阶段结束：低频落地一次记忆文件（失败忽略，只是参考资料）
+    SaveStateMemory();
 
     return true;
 }
@@ -2191,7 +2674,7 @@ bool GatherDayVotes(int& exiled, int& bombTarget)
         if (!g_players[i].alive || !IsNpc(i)) continue;
         if (g_players[i].jobId == 6 && g_players[i].idiotFlipped) continue;
 
-        int v = ParseNpcTarget(NpcGetAction(i, "day_vote", AliveTargetList(0), ""), "VOTE");
+        int v = ParseNpcTarget(NpcGetAction(i, "day_vote", AliveTargetList(0), "", g_dayChatLog), "VOTE");
 
         if (!(v == 0 || v == -1 || (v >= 1 && v <= g_numPlayers && g_players[v].alive)))
         {
@@ -2204,6 +2687,22 @@ bool GatherDayVotes(int& exiled, int& bombTarget)
 
         if (v == 0) SendToAllL10n("玩家%s 弃权。", "Player %s abstained.", g_players[i].name.c_str());
         else SendToAllL10n("玩家%s 投票给了玩家%s（槽%d）。", "Player %s voted for player %s (slot %d).", g_players[i].name.c_str(), g_players[v].name.c_str(), v);
+
+        // 投票广播进聊天历史：NPC 的权重表/话题统计都吃「名字：内容」行
+        if (v == 0)
+        {
+            string line = "玩家" + g_players[i].name + " 弃权。";
+
+            AppendChatLine(line);
+            MemRecord(line);
+        }
+        else
+        {
+            string line = "玩家" + g_players[i].name + " 投票给了玩家" + g_players[v].name + "（槽" + to_string(v) + "）。";
+
+            AppendChatLine(line);
+            MemRecord(line);
+        }
 
         --remaining;
     }
@@ -2225,6 +2724,12 @@ bool GatherDayVotes(int& exiled, int& bombTarget)
                 {
                     g_players[i].voteTarget = 0;
                     SendToAllL10n("玩家%s 超时未投票，按弃权处理。", "Player %s timed out and abstained.", g_players[i].name.c_str());
+
+                    // 超时弃权也是投票结果，进聊天历史与记忆库
+                    string line = "玩家" + g_players[i].name + " 超时未投票，按弃权处理。";
+
+                    AppendChatLine(line);
+                    MemRecord(line);
                 }
             }
 
@@ -2254,6 +2759,11 @@ bool GatherDayVotes(int& exiled, int& bombTarget)
         int pollRc = PollAllForMessageTimed(msg, 100);
 
         if (pollRc < 0) return false;
+
+        // 节拍每轮必查（静默轮也要推进 NPC 讨论冷却与 @ 回应）：
+        // 有 @ 或新聊天时按 1.5s 间隔让 NPC 补充发言
+        NpcDiscussionBeat();
+
         if (pollRc == 0) continue;
 
         int dis = ParseDisconnectSlot(msg);
@@ -2329,12 +2839,68 @@ bool GatherDayVotes(int& exiled, int& bombTarget)
             if (vote == 0) SendToAllL10n("玩家%s 弃权。", "Player %s abstained.", g_players[slot].name.c_str());
             else SendToAllL10n("玩家%s 投票给了玩家%s（槽%d）。", "Player %s voted for player %s (slot %d).", g_players[slot].name.c_str(), g_players[vote].name.c_str(), vote);
 
+            // 真人投票同样进聊天历史与记忆库（口径与 NPC 票一致）
+            if (vote == 0)
+            {
+                string line = "玩家" + g_players[slot].name + " 弃权。";
+
+                AppendChatLine(line);
+                MemRecord(line);
+            }
+            else
+            {
+                string line = "玩家" + g_players[slot].name + " 投票给了玩家" + g_players[vote].name + "（槽" + to_string(vote) + "）。";
+
+                AppendChatLine(line);
+                MemRecord(line);
+            }
+
             --remaining;
         }
         else
         {
-            // 非投票内容一律视为聊天广播（玩家自己的内容原样透传，不翻译）
-            SendToAll(g_players[slot].name + "：" + SanitizeChat(content));
+            // 非投票内容一律视为聊天广播（玩家自己的内容原样透传，不翻译）；
+            // 禁言命中的玩家不广播，只私发本人驳回——命令已在上面的解析分支
+            // 放行，走到这里的内容不再含 VOTE/BOMB（需求 §20.4）
+            if (IsMuted(slot))
+            {
+                SendToClientL10nPair(slot, "你已被禁言，无法发言。", "You are muted and cannot speak.");
+            }
+            else
+            {
+                string sanitized = SanitizeChat(content);
+
+                SendToAll(g_players[slot].name + "：" + sanitized);
+
+                // 聊天进历史：NPC 权重表与话题统计的输入源
+                AppendChatLine(g_players[slot].name + "：" + sanitized);
+
+                // @ 前缀：目标私发提醒、发送者私发确认；目标为 NPC 时置
+                // atTarget 交给节拍机制回应。解析失败/目标是自己按普通聊天
+                string stripped;
+
+                int atSlot = ParseAtTarget(sanitized, slot, stripped);
+
+                if (atSlot > 0)
+                {
+                    SendToClientL10nPair(atSlot,
+                        g_players[slot].name + " at了你：" + stripped,
+                        g_players[slot].name + " at you: " + stripped);
+                    SendToClientL10nPair(slot,
+                        "你at了" + g_players[atSlot].name,
+                        "You @-ed " + g_players[atSlot].name);
+
+                    if (IsNpc(atSlot))
+                    {
+                        // atTarget = 去@头内容 + 完整原始行：模型两头都有数，
+                        // 离线模板只答不回问（直接答，不复读对方全文）
+                        g_npcChat[atSlot].atTarget = stripped
+                            + g_players[slot].name + "：" + sanitized;
+                    }
+
+                    MemRecord(g_players[slot].name + "@" + g_players[atSlot].name + "：" + stripped);
+                }
+            }
         }
     }
 
@@ -2360,15 +2926,21 @@ bool GatherDayVotes(int& exiled, int& bombTarget)
     if (maxV == 0)
     {
         SendToAllL10n("无人得票，白天无人被放逐。", "No votes cast. Nobody is exiled.");
+
+        MemRecord("白天无人得票，无人被放逐");
     }
     else if (top.size() > 1)
     {
         SendToAllL10n("最高票平票，白天无人被放逐。", "Tie on the highest votes. Nobody is exiled.");
+
+        MemRecord("白天最高票平票，无人被放逐");
     }
     else
     {
         exiled = top[0];
         SendToAllL10n("玩家%s（槽%d）被放逐。", "Player %s (slot %d) was exiled.", g_players[exiled].name.c_str(), exiled);
+
+        MemRecord(g_players[exiled].name + "（槽" + to_string(exiled) + "）被放逐");
     }
 
     return true;
@@ -2509,14 +3081,22 @@ bool DayPhase()
 
     // 白天发言：每个存活 NPC 至少发 1 次言（需求 §19.7），阶段开始时依序
     // 立即生成并广播，走真人聊天同渠道（名字：内容）；安排在投票窗口开启
-    // 之前，在线模型的等待不占用真人的投票时间
+    // 之前，在线模型的等待不占用真人的投票时间。禁言裁决与真人一致：
+    // NPC 名命中禁言名单则本条发言不广播（NPC 无输入通道，无需私发驳回）
+    // 开场前重置节拍状态：昨天的进度清零、旧聊天不算新内容（见节拍注释）
+    ResetNpcDayState();
+
     for (int i = 1; i <= g_numPlayers; ++i)
     {
         if (!g_players[i].alive || !IsNpc(i)) continue;
 
         string content = ParseNpcSpeech(NpcGetAction(i, "day_speech", vector<int>(), ""));
 
-        if (!content.empty())
+        g_npcChat[i].speechCount = 1;
+        g_npcChat[i].lastSpeech = chrono::steady_clock::now();
+        g_npcChat[i].chatSeen = g_chatLog.size();
+
+        if (!content.empty() && !IsMuted(i))
         {
             SendToAll(g_players[i].name + "：" + SanitizeChat(content));
         }
@@ -2538,6 +3118,8 @@ bool DayPhase()
     // 白狼王自爆后直接进入夜晚（跳过放逐），但窗口已在上面关闭
     if (bombTarget > 0)
     {
+        SaveStateMemory();
+
         return true;
     }
 
@@ -2551,6 +3133,9 @@ bool DayPhase()
     {
         if (!AskLastWords(exiled)) return false;
     }
+
+    // 白天阶段结束：低频落地一次记忆文件（失败忽略，只是参考资料）
+    SaveStateMemory();
 
     return true;
 }
@@ -2593,17 +3178,27 @@ bool CheckLoversVictory()
     return true;
 }
 
-// 检查胜负：返回胜方中文名；空串表示游戏继续
+// 检查胜负（需求 §20.3）：情侣第三方胜利优先；狼全灭好人胜；
+// 屠城（存活好人全灭）或屠边（神职全灭 / 村民全灭）狼人胜。
+// 返回胜方中文名；空串表示游戏继续
 string CheckVictory()
 {
     if (CheckLoversVictory()) return "情侣阵营";
 
     int wolves = CountAliveWolf();
-    int good = CountAliveGood();
 
     if (wolves == 0) return "好人阵营";
 
-    if (wolves >= good) return "狼人阵营";
+    int gods = CountAliveGod();
+    int vills = CountAliveVillager();
+
+    // 屠城：存活好人（神+民）全灭
+    if (gods == 0 && vills == 0) return "狼人阵营达成屠城胜利";
+
+    // 屠边：神职全灭或村民全灭
+    if (gods == 0) return "狼人阵营达成屠边胜利（神职全灭）";
+
+    if (vills == 0) return "狼人阵营达成屠边胜利（村民全灭）";
 
     return "";
 }
@@ -2699,10 +3294,33 @@ int main(int argc, char* argv[])
 
     LocalFree(wargv);
 
-    // 参数不足直接退出（固定 10 个 + 每玩家名与语言码各 1 个，N>=2 时至少 14 个）
-    if ((int)args.size() < 14)
+    // 禁言名单标记定位（需求 §20.4）：名字白名单不含连字符，玩家名不可能
+    // 出现 "--mutes"，全量扫描安全；无标记时 segEnd == args.size()，
+    // 与既有 9+2N 直连参数格式完全兼容（既有脚本行为不变）
+    int segEnd = (int)args.size();
+
+    for (int i = 2; i < (int)args.size(); ++i)
     {
-        Log("参数不足：Server.exe <gamePort> <names...> <startIp> <startPort> <roomId> <W> <N> <G> <level> <villager> <langs...>");
+        if (args[i] == "--mutes")
+        {
+            segEnd = i;
+            break;
+        }
+    }
+
+    // 参数不足直接退出（固定 10 个 + 每玩家名与语言码各 1 个，N>=2 时至少 14 个）
+    if (segEnd < 14)
+    {
+        Log("参数不足：Server.exe <gamePort> <names...> <startIp> <startPort> <roomId> <W> <N> <G> <level> <villager> <langs...> [--mutes ...]");
+        cout << "\n[ Pause ]\n";
+        system("pause > nul");
+        return 1;
+    }
+
+    // 标准段长度必须是偶数（10 + 2N），否则人数按整除会静默错位解析
+    if ((segEnd - 10) % 2 != 0)
+    {
+        Log("参数格式不合法：标准段应为 10+2N 个参数（含 --mutes 前全部）");
         cout << "\n[ Pause ]\n";
         system("pause > nul");
         return 1;
@@ -2711,7 +3329,7 @@ int main(int argc, char* argv[])
     int port = atoi(args[1].c_str());
 
     // 中间全部是玩家名；末尾还跟 N 个语言码（与名字一一对应），总数为 10 + 2N
-    g_numPlayers = ((int)args.size() - 10) / 2;
+    g_numPlayers = (segEnd - 10) / 2;
 
     if (g_numPlayers < 2 || g_numPlayers > MAX_PLAYERS)
     {
@@ -2721,8 +3339,8 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // 尾部固定 8 个参数（位于最后 N 个语言码之前）
-    int tail = (int)args.size();
+    // 尾部固定 8 个参数（位于最后 N 个语言码之前）；标准段终点即 segEnd
+    int tail = segEnd;
     g_startIp = args[tail - g_numPlayers - 8];
     g_startPort = atoi(args[tail - g_numPlayers - 7].c_str());
     g_roomId = args[tail - g_numPlayers - 6];
@@ -2745,6 +3363,37 @@ int main(int argc, char* argv[])
         if (_stricmp(code.c_str(), "npc") == 0) npcType[i] = 1;
         else if (_stricmp(code.c_str(), "npc-off") == 0) npcType[i] = 2;
         else g_playerLang[i] = ParseLang(code);
+    }
+
+    // --mutes 段（需求 §20.4）：标记后的全部参数进禁言名单。名单由 Start 侧
+    // 已规范化（含通配模式），此处只裁剪空白、去空项、按 NameEquals 去重
+    for (int i = segEnd + 1; i < (int)args.size(); ++i)
+    {
+        string m = TrimWhitespace(args[i]);
+
+        if (m.empty()) continue;
+
+        bool dup = false;
+
+        for (const string& e : g_mutes)
+        {
+            if (NameEquals(e, m))
+            {
+                dup = true;
+                break;
+            }
+        }
+
+        if (!dup) g_mutes.push_back(m);
+    }
+
+    if (!g_mutes.empty())
+    {
+        string list;
+
+        for (const string& m : g_mutes) list += m + " ";
+
+        Log("禁言名单 " + to_string(g_mutes.size()) + " 项：" + list);
     }
 
     // 防御：人数与三方比例兜底
@@ -2847,6 +3496,13 @@ int main(int argc, char* argv[])
 
     srand((unsigned)time(0));
 
+    // 开局清零：聊天历史/状态记忆/等待提示组合都是本局累积量，
+    // 进程虽是一局一进程，显式清零让内存阶段状态永远从干净起点开始
+    g_chatLog.clear();
+    g_dayChatLog.clear();
+    g_stateMemory.clear();
+    g_npcWaitHinted.clear();
+
     // 身份分配（先广播身份后处理丘比特/盗贼，让所有玩家先看到自己身份）
     AssignRoles();
 
@@ -2862,6 +3518,18 @@ int main(int argc, char* argv[])
 
         SendToAll(roster);
         Log("PLAYER_LIST broadcast: " + roster);
+
+        // 名单入状态记忆：NPC 之后所有决策都以此为基础的身份图谱
+        string rosterZh;
+
+        for (int i = 1; i <= g_numPlayers; ++i)
+        {
+            if (i > 1) rosterZh += "、";
+
+            rosterZh += to_string(i) + "号" + g_players[i].name;
+        }
+
+        MemRecord("玩家名单：" + rosterZh);
     }
 
     if (!SetupCupid())
@@ -2933,15 +3601,23 @@ int main(int argc, char* argv[])
         // CheckVictory 返回中文胜方名，按语言映射成对文本广播
         string enWinner = "Good camp";
 
-        if (winner == "狼人阵营") enWinner = "Wolf camp";
+        if (winner == "狼人阵营达成屠城胜利") enWinner = "Wolf camp wins by total annihilation";
+        else if (winner == "狼人阵营达成屠边胜利（神职全灭）") enWinner = "Wolf camp wins (all gods eliminated)";
+        else if (winner == "狼人阵营达成屠边胜利（村民全灭）") enWinner = "Wolf camp wins (all villagers eliminated)";
         else if (winner == "情侣阵营") enWinner = "Lovers camp";
 
         SendToAllL10nPair("本局结束，胜利方：" + winner + "！", "Game over. Winner: " + enWinner + "!");
         Log("Winner: " + winner);
+
+        // 结束记录进状态记忆，随下方最后一次落盘写入 npc_memory.txt
+        MemRecord("本局结束，胜利方：" + winner);
     }
 
     // 全部失联 → 释放房间；否则保留房间供玩家回房重开
     g_releaseRoom = AllLost();
+
+    // 终局最后一次落盘：保证 npc_memory.txt 里包含结局（失败忽略）
+    SaveStateMemory();
 
     NotifyStartGameEnded();
 
