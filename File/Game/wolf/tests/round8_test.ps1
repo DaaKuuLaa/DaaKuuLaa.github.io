@@ -189,8 +189,12 @@ function Handle-GameLine($cl, $line) {
         } elseif ($cl.role -eq 'seer') {
             $cl.w.WriteLine('PLAYER_' + $cl.k + '|1')
         } elseif ($cl.role -eq 'witch') {
-            if ($cl.witchInputs -eq 0 -and $script:wolfTarget) {
-                $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $script:wolfTarget)
+            # 新协议（§20.1）：第一问「是否用解药？（1救 0不救）」答 1 直接救狼刀目标
+            # （无需目标输入）；第二问「是否用毒药？」答 0。恒救 → 平安夜稳定，
+            # 白天必到（旧版发槽号应答：目标≠1 时非法被重问→不救→狼刀民→屠边终局，
+            # 白天永不来，B4-B6 曾因此挂）
+            if ($cl.witchInputs -eq 0) {
+                $cl.w.WriteLine('PLAYER_' + $cl.k + '|1')
             } else {
                 $cl.w.WriteLine('PLAYER_' + $cl.k + '|0')
             }
@@ -201,9 +205,9 @@ function Handle-GameLine($cl, $line) {
     }
 }
 
-# 定狼刀目标：身份齐后取第一个非狼存活者（脚本全知身份）
+# 定狼刀目标：身份齐后取第一个非狼存活者（脚本全知身份）。
+# 每次重算——初始兜底值（角色未齐时 1）已会 stale，若不覆盖则狼恒刀自己被拒死循环
 function Ensure-WolfTarget($bots) {
-    if ($script:wolfTarget) { return }
     $rolesKnown = (@($bots | Where-Object { $_.role -eq '' }).Count -eq 0)
     if (-not $rolesKnown) { return }
     foreach ($b in $bots) {

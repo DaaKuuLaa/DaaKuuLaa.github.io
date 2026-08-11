@@ -156,10 +156,11 @@ function Run-Game($port, $rmName, $gameTag) {
                         $t = Get-SeerTarget ($cl.k)
                         if ($t -gt 0) { $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $t) }
                     } elseif ($cl.role -eq 'witch') {
-                        # 第一次输入是解药（救狼刀目标），第二次输入是毒药（不用）
+                        # 新协议（§20.1）：第一问「是否用解药？（1 救 0 不救）」，
+                        # 答 1 直接救狼刀目标（无需再输目标）；第二问「是否用毒药？」答 0
+                        # 两局都首夜必救 → 平安夜稳定，不再依赖槽位排列巧合
                         if ($cl.witchInputs -eq 0) {
-                            $t = Get-WolfTarget
-                            if ($t -gt 0) { $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $t) }
+                            $cl.w.WriteLine('PLAYER_' + $cl.k + '|1')
                         } else {
                             $cl.w.WriteLine('PLAYER_' + $cl.k + '|0')
                         }
@@ -283,10 +284,14 @@ function Run-Game($port, $rmName, $gameTag) {
                     $st.restVoted = $true
                 }
             } else {
-                # 游戏2 白天1：全员（含狼与X本人）投第一个非狼存活者 X → 放逐后沉默测超时
+                # 游戏2 白天1：全员投第一个存活神职 X（屠边规则下不能放逐唯一村民，
+                # 否则民 0 立即屠边终局、夜晚 2 不会推进）→ 放逐神后民/神都存活
                 if (-not $st.X) {
                     foreach ($cl in $script:conns) {
-                        if ($cl.alive -and $cl.role -ne 'werewolf') { $st.X = $cl.k; break }
+                        if ($cl.alive -and $cl.role -ne 'werewolf' -and $cl.role -ne 'villager') {
+                            $st.X = $cl.k
+                            break
+                        }
                     }
                 }
                 if ($st.X -gt 0 -and -not $st.day1Voted) {

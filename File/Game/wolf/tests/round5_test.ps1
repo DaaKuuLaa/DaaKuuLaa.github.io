@@ -72,7 +72,14 @@ function Stop-Keepalive {
 
 function Write-Locked($cl, $cmd) {
     [System.Threading.Monitor]::Enter($cl.wlock)
-    try { $cl.w.WriteLine($cmd) } finally { [System.Threading.Monitor]::Exit($cl.wlock) }
+    try {
+        $cl.w.WriteLine($cmd)
+    } catch {
+        # 连接已被服务端关闭（如 BAN 踢出）时写入抛 IOException：
+        # 标记关闭静默吞掉，让后续 RecvUntil 超时产生对应 FAIL，而不是崩掉整个脚本
+        $cl.closed = $true
+        $cl.alive = $false
+    } finally { [System.Threading.Monitor]::Exit($cl.wlock) }
 }
 
 function SendLine($cl, $cmd) { Write-Locked $cl $cmd }
@@ -105,12 +112,17 @@ function ReadChunk($s, $timeoutMs) {
     $deadline = [DateTime]::Now.AddMilliseconds($timeoutMs)
     $bytes = New-Object System.Collections.Generic.List[byte]
     while ([DateTime]::Now -lt $deadline) {
-        if ($s.DataAvailable) {
-            $b = $s.ReadByte()
-            if ($b -lt 0) { break }
-            $bytes.Add([byte]$b)
-        } else {
-            Start-Sleep -Milliseconds 20
+        try {
+            if ($s.DataAvailable) {
+                $b = $s.ReadByte()
+                if ($b -lt 0) { break }
+                $bytes.Add([byte]$b)
+            } else {
+                Start-Sleep -Milliseconds 20
+            }
+        } catch {
+            # 连接已被服务端关闭（如 BAN 踢出后继续读）：按无数据返回，不抛异常
+            break
         }
     }
     return $bytes.ToArray()
@@ -118,6 +130,7 @@ function ReadChunk($s, $timeoutMs) {
 
 function RecvAll($cl, $timeoutMs = 500) {
     $arr = ReadChunk $cl.s $timeoutMs
+    if ($null -eq $arr) { return '' }
     return [System.Text.Encoding]::UTF8.GetString($arr)
 }
 

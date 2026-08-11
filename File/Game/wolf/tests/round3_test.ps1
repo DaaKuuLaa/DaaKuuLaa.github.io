@@ -370,8 +370,10 @@ function Run-Game($port, $rmName, $scenario, $level, $langCode) {
                 'en' {
                     # 中文投票别名在服务端仍被接受（服务端不管客户端语言，属设计），
                     # 但广播按玩家语言渲染为英文
+                    # 注意：狼夜刀固定杀 2 号（Get-WolfTarget 第一个非狼），新女巫协议
+                    # 下 bot 不救 → 2 号白天必死；投死人会被拒票变成平票（6.7 曾因此 FAIL）
                     if (-not $st.vote1Sent) {
-                        $script:conns[0].w.WriteLine('PLAYER_1|投票 2')
+                        $script:conns[0].w.WriteLine('PLAYER_1|投票 3')
                         $st.vote1Sent = $true
                     }
 

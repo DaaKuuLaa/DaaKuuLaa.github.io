@@ -20,11 +20,24 @@
 //   - 房间内 LIST 可用（服务端 LIST 本无状态检查）；命令解析走
 //     FindCommand（英文全名/短别名/中文别名等效）。
 //
+// 第十轮（需求 §20.4/§20.5/§20.6/§20.7/§20.8/§20.9）：
+//   - MUTE/UNMUTE（禁言/解禁，房主专属）：槽号/名字/通配/ALL 多选入单，
+//     名单随房间销毁，被踢时精确名自动解禁；SHOW MUTE 查看；
+//   - PICK 多目标与通配踢出（逐个禁入 10 秒机制不变），单目标文案保持
+//     既有断言兼容；
+//   - UNBAN ALL 清空整个黑名单；BAN/UNBAN 双侧统一 NormalizeWildcardPattern
+//     化简（BAN *** 与 BAN * 同项）；
+//   - SHOW/LOOK 大厅可用（输出用法）；ADD 无房间时提示先入房再添加；
+//   - PROXY_GAME/GAME_FWD 游戏中继：替连不上游戏端口的客户端把大厅连接
+//     变成透明转发通道（PROXY_OK/PROXY_FAIL 应答，PING 透传双向保活，
+//     两端收发按行加锁）。
+//
 // 参考实现：reference/demon/Start.cpp（恶魔轮盘），复用其线程模型、握手、
 // 发送超时、CreateProcessW 传递 CJK 名字、房间状态机等已验证设计。
 #include "common.h"
 #include "npc_bot.h"
 
+#include <atomic>
 #include <signal.h>
 #include <shellapi.h>
 
@@ -109,6 +122,44 @@ string NormalizeWildcards(const string& s)
     }
 
     return out;
+}
+
+// 通配模式化简（§20.8）：全角已由 NormalizeWildcards 统一半角后，循环
+// 折叠等价写法——相邻的 "**"、"*?"、"?*" 一律折成一个 "*"，直到不再
+// 变化（a?** → a?* → a*；???/a? 保持原样）。BAN 入单与 UNBAN 删除两侧
+// 用同一化简，保证 BAN *** 与 BAN * 被当作同一项
+string NormalizeWildcardPattern(const string& s)
+{
+    string p = NormalizeWildcards(s);
+    bool changed = true;
+
+    while (changed)
+    {
+        changed = false;
+        string out;
+        out.reserve(p.size());
+
+        for (size_t i = 0; i < p.size(); ++i)
+        {
+            if (i + 1 < p.size() &&
+                ((p[i] == '*' && p[i + 1] == '*') ||
+                 (p[i] == '*' && p[i + 1] == '?') ||
+                 (p[i] == '?' && p[i + 1] == '*')))
+            {
+                out += '*';
+                ++i;
+                changed = true;
+            }
+            else
+            {
+                out += p[i];
+            }
+        }
+
+        p = out;
+    }
+
+    return p;
 }
 
 // 是否含通配符（半角或全角），决定该 BAN 项按模式处理（不做名字净化）
@@ -265,6 +316,7 @@ struct Room
     vector<string> bannedIps;       // 拉黑名单（按 IP；房间销毁时一并清除）
     vector<PlayerLog> logs;         // 进出记录（LG 查询；随房间销毁）
     vector<LocalUserRec> localUsers; // 本地用户（ADD USER，§19.6；随房间销毁）
+    vector<string> muteList;        // 禁言名单（§20.4：名字项与通配模式项；随房间销毁）
 
     Room()
         : playerCount(0), gameStarted(false), gameEnded(false),
@@ -343,6 +395,29 @@ struct ClientInfo
 
 map<SOCKET, ClientInfo> g_clients;
 mutex g_clientsMutex;
+
+// ============ 游戏连接中继（§20.7） ============
+// 客户端直连游戏端口失败时可回退到 Start 中继：Start 用玩家的大厅连接
+// 同时扮演"对客户端的游戏服务器"与"对 Server.exe 的游戏客户端"。中继
+// 对象按客户端 socket 索引；读游戏侧数据的工作在独立转发线程里做，客户
+// 端侧的协议行由原连接线程解析后经 RelayWriteLine 写给游戏服务器。两端
+// 收发都必须逐行加锁，否则两个线程并发 send 会让半条行交叉被对端误解析。
+struct ProxyRelay
+{
+    SOCKET clientSock;        // 大厅连接（对客户端，被转发线程只读）
+    SOCKET proxySock;         // 游戏连接（对 Server.exe 的游戏端口）
+    atomic<bool> alive;       // 中继是否存活（两线程共享，用原子防撕裂）
+    mutex proxyWriteMutex;    // 串行化对 proxySock 的写与失效判定
+    mutex clientWriteMutex;   // 串行化对 clientSock 的写（命令线程与转发线程并发）
+
+    ProxyRelay(SOCKET c, SOCKET p) : clientSock(c), proxySock(p)
+    {
+        alive = true;
+    }
+};
+
+map<SOCKET, shared_ptr<ProxyRelay>> g_proxies;
+mutex g_proxiesMutex;
 
 // ============ 基础工具 ============
 
@@ -467,6 +542,20 @@ void SendToClient(SOCKET sock, const string& msg)
         Log("SENDCHECK sock=" + to_string(sock) + " msg=[" + msg + "]");
     }
 
+    // 中继模式下同一客户端 socket 会被"转发线程（服务器→客户端）"与
+    // "命令线程（命令回复）"并发写入，send 必须串行化，防止半条行交错
+    // 到对端被当成两条协议（§20.7）
+    shared_ptr<ProxyRelay> rel;
+
+    {
+        lock_guard<mutex> lk(g_proxiesMutex);
+        auto it = g_proxies.find(sock);
+        if (it != g_proxies.end()) rel = it->second;
+    }
+
+    unique_lock<mutex> relayLock;
+    if (rel) relayLock = unique_lock<mutex>(rel->clientWriteMutex);
+
     string out = msg + "\n";
     int total = 0;
 
@@ -482,6 +571,133 @@ void SendToClient(SOCKET sock, const string& msg)
         }
 
         total += sent;
+    }
+}
+
+// 查某连接是否已建游戏中继（空指针 = 没有）。只查不建，锁内快照指针，
+// shared_ptr 保证转发线程存续期内对象不析构
+shared_ptr<ProxyRelay> GetRelayFor(SOCKET sock)
+{
+    lock_guard<mutex> lk(g_proxiesMutex);
+    auto it = g_proxies.find(sock);
+    return it == g_proxies.end() ? nullptr : it->second;
+}
+
+// 中继"上行"：把剥掉 GAME_FWD 前缀的一行写给游戏服务器。发送失败只置
+// 失效标记，socket 的关闭统一交给转发线程收尾——两线程双 closesocket
+// 会让句柄复用的新连接误杀（§20.7）
+void RelayWriteLine(shared_ptr<ProxyRelay> relay, const string& line)
+{
+    if (!relay) return;
+
+    lock_guard<mutex> lk(relay->proxyWriteMutex);
+
+    if (!relay->alive) return;
+
+    string out = line + "\n";
+    int total = 0;
+
+    while (total < (int)out.size())
+    {
+        int sent = send(relay->proxySock, out.c_str() + total, (int)out.size() - total, 0);
+
+        if (sent <= 0)
+        {
+            relay->alive = false;
+            return;
+        }
+
+        total += sent;
+    }
+}
+
+// 向游戏服务器发起的 TCP 连接：非阻塞 connect + select 超时（参考现有
+// 握手 select 超时思路），避免 Server.exe 尚未就绪时阻塞整条命令线程数秒
+SOCKET ConnectWithTimeout(const string& ip, int port, int timeoutMs)
+{
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return INVALID_SOCKET;
+
+    sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr(ip.c_str());
+    addr.sin_port = htons((u_short)port);
+
+    u_long nb = 1;
+    ioctlsocket(s, FIONBIO, &nb);
+
+    int r = connect(s, (sockaddr*)&addr, sizeof(addr));
+
+    if (r != 0 && WSAGetLastError() != WSAEWOULDBLOCK)
+    {
+        closesocket(s);
+        return INVALID_SOCKET;
+    }
+
+    fd_set writeSet;
+    FD_ZERO(&writeSet);
+    FD_SET(s, &writeSet);
+    timeval tv = { (long)(timeoutMs / 1000), (long)(timeoutMs % 1000) * 1000 };
+    int sel = select(0, NULL, &writeSet, NULL, &tv);
+
+    if (sel <= 0)
+    {
+        closesocket(s);
+        return INVALID_SOCKET;
+    }
+
+    int err = 0;
+    int len = sizeof(err);
+    getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
+
+    if (err != 0)
+    {
+        closesocket(s);
+        return INVALID_SOCKET;
+    }
+
+    nb = 0;
+    ioctlsocket(s, FIONBIO, &nb);
+
+    int sndtimeo = 5000;
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&sndtimeo, sizeof(sndtimeo));
+
+    return s;
+}
+
+// 中继转发线程主体：从游戏服务器逐行读，加 GAME_FWD| 前缀发给客户端。
+// 任一端断开 → 关闭游戏侧并注销中继；客户端 socket 的关闭始终由连接
+// 线程自己负责（这里绝不碰 clientSock，以免与它的断线收尾竞态双 close）。
+// 客户端连接线程见不到数据时会按常规心跳失联收尾，两者互不依赖
+void ProxyForwardLoop(shared_ptr<ProxyRelay> relay)
+{
+    string buffer;
+
+    while (relay->alive)
+    {
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(relay->proxySock, &readSet);
+        timeval tv = { 1, 0 };
+        int sel = select(0, &readSet, NULL, NULL, &tv);
+
+        if (sel < 0) break;
+        if (sel == 0) continue;
+
+        if (!ReceiveLines(relay->proxySock, buffer, [relay](const string& line)
+        {
+            SendToClient(relay->clientSock, "GAME_FWD|" + line);
+        }))
+        {
+            break;
+        }
+    }
+
+    closesocket(relay->proxySock);
+
+    {
+        lock_guard<mutex> lk(g_proxiesMutex);
+        g_proxies.erase(relay->clientSock);
     }
 }
 
@@ -593,6 +809,109 @@ void RoomMsg(Room* room, const string& text, SOCKET exclude = INVALID_SOCKET)
     SendToRoomMembers(room, "ROOM_MSG|" + text, exclude);
 }
 
+// 解析 @ 前缀聊天（局外 at，§21）：@<名字或槽号> <内容>。名字大小写不
+// 敏感匹配房内玩家（真人/NPC/本地用户，槽位名非空即算）；槽号为 1 基。
+// 返回命中槽下标；解析失败/目标不存在/目标是发送者自己/无内容 → -1，
+// 由调用方按普通聊天原样广播（不提醒）。游戏期断开保留的槽（名字在、
+// socket 无）也能命中——它收不到私发提醒但广播与会话方提示照常
+int ParseAtTarget(Room* room, const string& chat, int selfSlot)
+{
+    if (!room || chat.empty() || chat[0] != '@') return -1;
+
+    size_t sp = chat.find(' ');
+
+    if (sp == string::npos || sp <= 1) return -1;
+
+    string targetStr = chat.substr(1, sp - 1);
+
+    if (targetStr.empty()) return -1;
+
+    if (chat.substr(sp + 1).empty()) return -1;
+
+    bool isNum = true;
+
+    for (char c : targetStr)
+    {
+        if (!isdigit((unsigned char)c)) { isNum = false; break; }
+    }
+
+    int hit = -1;
+
+    if (isNum)
+    {
+        int num = atoi(targetStr.c_str());
+
+        if (num >= 1 && num <= MAX_PLAYERS)
+        {
+            int idx = num - 1;
+
+            if (!room->slots[idx].name.empty()) hit = idx;
+        }
+    }
+    else
+    {
+        for (int i = 0; i < MAX_PLAYERS; ++i)
+        {
+            if (!room->slots[i].name.empty() && NameEquals(room->slots[i].name, targetStr))
+            {
+                hit = i;
+                break;
+            }
+        }
+    }
+
+    if (hit < 0 || hit == selfSlot) return -1;
+
+    return hit;
+}
+
+// 局外 @ 命中 NPC 时 Start 侧代答（NPC 无大厅连接收不到私发提醒，§21）：
+// 随机模板（3-5 种）里取一个词从被 at 内容里凑；回复用 INVALID_SOCKET
+// 全员广播——普通聊天广播排除发送者，但"对方回你话要让你看见"，故 NPC
+// 回复的排除不能带原发送者（NPC 本身无 socket，也只能这么发）
+void NpcRoomAtReply(Room* room, const string& npcName, const string& content)
+{
+    static const char* tmpls[] = {
+        "嗯？@我什么事",
+        "我觉得{x}有道理",
+        "我先看看局势再说",
+        "你这么说的话，{x}确实值得注意",
+        "收到，我记下了",
+    };
+
+    size_t count = sizeof(tmpls) / sizeof(tmpls[0]);
+
+    // 从内容里取第一个词（空白/中英文标点分隔，限长防模板被撑爆）
+    string word;
+
+    for (char c : content)
+    {
+        if (c == ' ' || c == '、' || c == '，' || c == ',' || c == '。' || c == '.' ||
+            c == '！' || c == '!' || c == '？' || c == '?')
+        {
+            if (!word.empty()) break;
+            continue;
+        }
+
+        word += c;
+
+        if (word.size() >= 16) break;
+    }
+
+    if (word.empty()) word = "你们";
+
+    string reply = tmpls[rand() % count];
+
+    size_t x = reply.find("{x}");
+
+    if (x != string::npos)
+    {
+        reply.replace(x, 3, word);
+    }
+
+    RoomMsg(room, npcName + "：" + reply, INVALID_SOCKET);
+}
+
 // ============ 重名检查 ============
 
 // 全服务器唯一：遍历所有房间占用槽 + 当前连接。NPC 槽也占名字（§19.7）
@@ -607,6 +926,18 @@ bool NameTaken(const string& name, SOCKET self)
             {
                 return true;
             }
+        }
+    }
+
+    // 本地用户窗口刚拉起的瞬间还走在"连大厅→改名→入房"的路上，槽位尚未
+    // 落座：记录里的名字同样占名（§19.6）。不查的话 ADD USER Alice 后立刻
+    // ADD NPC Alice 会成功，随后 Alice 窗口入房反被"名字已被占用"拒绝。
+    // NAME/ADD USER/ADD NPC 全走 NameTaken，这一处补齐即全部生效
+    for (auto& kv : g_rooms)
+    {
+        for (const LocalUserRec& lu : kv.second->localUsers)
+        {
+            if (NameEquals(lu.name, name)) return true;
         }
     }
 
@@ -631,6 +962,109 @@ bool ContainsName(const vector<string>& v, const string& n)
     }
 
     return false;
+}
+
+// ============ 禁言名单工具（§20.4） ============
+
+// 禁言名单精确项清理：玩家被踢/离房后，名单里"精确等于该名字"的项随人
+// 一并解除；通配模式项保留（模式禁言的是名字形态而非具体某人，不该被
+// 某个人的离开触发移除）
+void UnmuteExactName(Room* room, const string& name)
+{
+    if (!room || name.empty()) return;
+
+    for (size_t i = 0; i < room->muteList.size();)
+    {
+        if (!HasWildcard(room->muteList[i]) && NameEquals(room->muteList[i], name))
+        {
+            room->muteList.erase(room->muteList.begin() + i);
+        }
+        else
+        {
+            ++i;
+        }
+    }
+}
+
+// 该玩家是否被禁言：名单里精确名字或任一通配模式命中即禁言。新加入者
+// 命中通配模式时无需额外登记——发言时按名单实时判定即可覆盖（§20.4）
+bool IsMuted(Room* room, const string& name)
+{
+    if (!room || name.empty()) return false;
+
+    for (const string& e : room->muteList)
+    {
+        if (NameEquals(e, name) || GlobMatch(e, name)) return true;
+    }
+
+    return false;
+}
+
+// PICK 联动清理：被踢者自己或其下属本地用户一并移除（杀窗口进程+删记
+// 录）。EjectPlayerFromRoom 内部还会按名字兜底删一次，两处幂等
+void RemoveLocalUsersForSlot(Room* room, int slot, const string& kickedName)
+{
+    if (!room) return;
+
+    for (size_t li = 0; li < room->localUsers.size();)
+    {
+        bool match = NameEquals(room->localUsers[li].name, kickedName)
+            || room->localUsers[li].ownerSlot == slot;
+
+        if (match)
+        {
+            DWORD pid = room->localUsers[li].pid;
+
+            if (pid != 0 && pid != GetCurrentProcessId())
+            {
+                HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+
+                if (h)
+                {
+                    TerminateProcess(h, 1);
+                    CloseHandle(h);
+                }
+            }
+
+            room->localUsers.erase(room->localUsers.begin() + li);
+        }
+        else
+        {
+            ++li;
+        }
+    }
+}
+
+// 移除 NPC/本地用户占用槽的公共动作（UNADD、PICK、BAN 共用）：NPC/本地
+// 用户槽可能没有 socket（本地用户窗口未连/游戏中），EjectPlayerFromRoom
+// 会因 sock==INVALID 空转，必须直接清字段减人数；本地用户窗口进程由
+// RemoveLocalUsersForSlot 杀（有 TerminateProcess 兜底）；禁言精确名一并
+// 解除（与 Eject 对被踢真人行为一致）。游戏结束后补减 gamePlayerCount：
+// 若保留原值，"全员回房"判定（占用数==gamePlayerCount，REJOIN）会永远
+// 等这个已不存在的玩家，房间卡死在 gameEnded 无法重开。outName 输出被
+// 移除者的名字（调用方广播/汇总用）
+void RemoveNpcOrLocalSlot(Room* room, int slot, string& outName)
+{
+    outName = room->slots[slot].name;
+
+    room->slots[slot].sock = INVALID_SOCKET;
+    room->slots[slot].ready = false;
+    room->slots[slot].isNpc = false;
+    room->slots[slot].npcOnline = false;
+    room->slots[slot].isLocalUser = false;
+    room->slots[slot].ownerSlot = -1;
+    room->slots[slot].name.clear();
+    room->slots[slot].ip.clear();
+    room->slots[slot].gamePid = 0;
+    room->playerCount = max(0, room->playerCount - 1);
+
+    if (room->gameEnded)
+    {
+        room->gamePlayerCount = max(0, room->gamePlayerCount - 1);
+    }
+
+    RemoveLocalUsersForSlot(room, slot, outName);
+    UnmuteExactName(room, outName);
 }
 
 // ============ 开局 ============
@@ -688,6 +1122,20 @@ void StartGameServer(Room* room)
             {
                 cmd += LangCode(room->slots[i].lang);
             }
+        }
+    }
+
+    // 尾部追加禁言名单（§20.4）：--mutes 标记后跟各项（名称/通配模式，
+    // 均已入库净化）。Server 从 argv 尾部解析：见到 --mutes 后全部剩余
+    // 参数即为禁言项；无禁言时不追加，参数格式与旧契约（9+2N）完全一致。
+    // 名字白名单不含连字符，「--mutes」不可能与玩家名撞车，标记无歧义
+    if (!room->muteList.empty())
+    {
+        cmd += " --mutes";
+
+        for (const string& m : room->muteList)
+        {
+            cmd += " " + m;
         }
     }
 
@@ -1038,6 +1486,9 @@ void RemovePlayerFromRoom(SOCKET sock)
             {
                 UpsertPlayerLog(room, leavingName, leavingIp, false);
             }
+
+            // 离房自动解除该玩家在禁言名单里的精确名项（§20.4）
+            UnmuteExactName(room, leavingName);
         }
 
         // 槽位空闲说明已被 PICK 分支清理过，不能再扣人数；游戏阶段也不减
@@ -1109,11 +1560,14 @@ void EjectPlayerFromRoom(Room* room, int slot, const char* reasonZh, const char*
     room->slots[slot].ownerSlot = -1;
     room->playerCount = max(0, room->playerCount - 1);
 
-    // 被 PICK/BAN 踢出：进出记录置 out（记录保留）
+    // 被 PICK/BAN 踢出：进出记录置 out（记录保留）；禁言名单里该玩家的
+    // 精确名字项自动解除（通配模式项保留，§20.4）
     if (!kickedName.empty())
     {
         UpsertPlayerLog(room, kickedName, kickedIp, false);
     }
+
+    UnmuteExactName(room, kickedName);
 
     SendToClient(kickedSock, string("KICKED|") + Txt(kickedLang, reasonZh, reasonEn));
     Sleep(200);
@@ -1194,6 +1648,52 @@ int ResolveSlotOrName(Room* room, const string& arg, SOCKET caller)
     return -1;
 }
 
+// 解析 NPC/本地用户占用槽（UNADD/PICK/BAN 目标）：槽号或名字，只命中
+// isNpc/isLocalUser 的槽。本地用户可能没连大厅（游戏中/结束未回房），
+// 此时 sock 无效，ResolveSlotOrName 找不到它——必须按标记直接解析（对应
+// 的 REJOIN 计数由 RemoveNpcOrLocalSlot 同步）。真人槽返回 -1 由调用方
+// 区分提示（UNADD 的"真人请用 PICK"）；失败也返回 -1
+int ResolveNpcOrLocalSlot(Room* room, const string& arg)
+{
+    bool isNum = true;
+
+    for (char c : arg)
+    {
+        if (!isdigit((unsigned char)c)) { isNum = false; break; }
+    }
+
+    if (isNum && !arg.empty())
+    {
+        int num = atoi(arg.c_str());
+
+        if (num >= 1 && num <= MAX_PLAYERS)
+        {
+            int idx = num - 1;
+            const Slot& s = room->slots[idx];
+
+            if ((s.isNpc || s.isLocalUser) && !s.name.empty())
+            {
+                return idx;
+            }
+        }
+
+        return -1;
+    }
+
+    for (int i = 0; i < MAX_PLAYERS; ++i)
+    {
+        const Slot& s = room->slots[i];
+
+        if ((s.isNpc || s.isLocalUser) && !s.name.empty() &&
+            NameEquals(s.name, arg))
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
 // ============ BAN/UNBAN 批量工具（需求 §14.5） ============
 
 // 参数是否以 .ban 结尾（大小写不敏感）→ 视为黑名单文件路径。
@@ -1218,6 +1718,7 @@ int ApplyBanItem(Room* room, const string& item, bool isBan, const string& selfN
     if (HasWildcard(item))
     {
         string pat = NormalizeWildcards(item);
+        pat = NormalizeWildcardPattern(pat);
         pat = CleanBanPattern(pat);
 
         if (pat.empty()) return 0;
@@ -1241,7 +1742,8 @@ int ApplyBanItem(Room* room, const string& item, bool isBan, const string& selfN
 
             if (!dup) list.push_back(pat);
 
-            // 房内已有匹配者立即踢出（房主槽 0 除外，与 IP 拉黑行为一致）
+            // 房内已有匹配者立即踢出（房主槽 0 除外，与 IP 拉黑行为一致）；
+            // NPC/本地用户槽无 socket（Eject 会空转），按移除动作用
             for (int i = 1; i < MAX_PLAYERS; ++i)
             {
                 if (!SlotOccupied(room->slots[i])) continue;
@@ -1250,9 +1752,17 @@ int ApplyBanItem(Room* room, const string& item, bool isBan, const string& selfN
 
                 if (GlobMatch(pat, target))
                 {
-                    EjectPlayerFromRoom(room, i,
-                        ipLike ? "你的 IP 已被房主拉黑" : "你已被房主拉黑并移出房间",
-                        ipLike ? "Your IP was banned by the host" : "You were banned and removed by the host");
+                    if (room->slots[i].isNpc || room->slots[i].isLocalUser)
+                    {
+                        string nm;
+                        RemoveNpcOrLocalSlot(room, i, nm);
+                    }
+                    else
+                    {
+                        EjectPlayerFromRoom(room, i,
+                            ipLike ? "你的 IP 已被房主拉黑" : "你已被房主拉黑并移出房间",
+                            ipLike ? "Your IP was banned by the host" : "You were banned and removed by the host");
+                    }
                 }
             }
 
@@ -1327,8 +1837,14 @@ int ApplyBanItem(Room* room, const string& item, bool isBan, const string& selfN
         // 拉黑自己逐项拒绝，不中断同命令其他项
         if (NameEquals(targetName, selfName)) return -1;
 
-        // 在房则踢出（拉黑其槽位名，防大小写变体绕过）；不在房按规范化名入单
+        // 在房则踢出（拉黑其槽位名，防大小写变体绕过）；不在房按规范化名入单。
+        // NPC/本地用户槽无 socket 时 ResolveSlotOrName 找不到，按标记补一次
         int target = ResolveSlotOrName(room, item, INVALID_SOCKET);
+
+        if (target < 0)
+        {
+            target = ResolveNpcOrLocalSlot(room, item);
+        }
 
         if (target >= 0)
         {
@@ -1339,7 +1855,16 @@ int ApplyBanItem(Room* room, const string& item, bool isBan, const string& selfN
                 room->bannedNames.push_back(bannedName);
             }
 
-            EjectPlayerFromRoom(room, target, "你已被房主拉黑并移出房间", "You were banned and removed by the host");
+            if (room->slots[target].isNpc || room->slots[target].isLocalUser)
+            {
+                // BAN 命中 NPC/本地用户：入黑名单外同时拆掉该槽（同 UNADD）
+                string nm;
+                RemoveNpcOrLocalSlot(room, target, nm);
+            }
+            else
+            {
+                EjectPlayerFromRoom(room, target, "你已被房主拉黑并移出房间", "You were banned and removed by the host");
+            }
         }
         else
         {
@@ -1419,7 +1944,13 @@ void HandleCommand(SOCKET sock, const string& line)
     ClientInfo& ci = cit->second;
 
     // 心跳保活行：协议保留字，不算聊天/命令，只刷新 lastSeen（recv 层已刷）
-    if (IsPingLine(line)) return;
+    if (IsPingLine(line))
+    {
+        // 中继玩家的裸 PING 还要原样转给游戏服务器：游戏侧对"游戏连接"
+        // 的心跳判定与本连接独立，靠这条透传维持游戏侧链路活跃（§20.7）
+        RelayWriteLine(GetRelayFor(sock), "PING");
+        return;
+    }
 
     // 统一解析：命令字与参数。协议标准分隔符是 '|'（NAME|abc、BAN|P1 P2），
     // 空格分隔是兼容写法（RATIO 2 0 2）。两者同时出现时按更靠前的一个切分：
@@ -1692,20 +2223,406 @@ void HandleCommand(SOCKET sock, const string& line)
         return;
     }
 
+    if (upper == "MUTE" || upper == "UNMUTE" || cmdStr == "禁言" || cmdStr == "解禁")
+    {
+        // 禁言/解禁（§20.4）：房主专属。参数空格分隔多项，每项=槽号/名字/
+        // 通配模式/ALL；MUTE 把命中者按名（或模式）写入禁言名单，UNMUTE
+        // 按名字/模式精确移除。命令处理照常，只有聊天文本会被驳回
+        if (!room || !ci.isAdmin)
+        {
+            SendToClientL10n(sock, "ERROR|", "只有房主可以执行该操作", "Only the host can do that");
+            return;
+        }
+
+        bool isMute = (upper == "MUTE" || cmdStr == "禁言");
+
+        if (argStr.empty())
+        {
+            SendToClientL10n(sock, "ROOM_MSG|",
+                isMute ? "MUTE 用法：MUTE <槽号/名字/通配模式/ALL>...（空格分隔多项；被禁言者的聊天不会广播；UNMUTE 解除）"
+                       : "UNMUTE 用法：UNMUTE <名字/通配模式/ALL>...（解除禁言；不带参数显示此用法）",
+                isMute ? "MUTE usage: MUTE <slot/name/wildcard/ALL>... (space-separated; muted players' chat is blocked; UNMUTE lifts it)"
+                       : "UNMUTE usage: UNMUTE <name/wildcard/ALL>... (lift mutes; no argument shows this usage)");
+            return;
+        }
+
+        // ALL：MUTE ALL 落一个 "*" 通配（涵盖当前与今后加入者）；
+        // UNMUTE ALL 清空整个禁言名单
+        if (_stricmp(argStr.c_str(), "ALL") == 0)
+        {
+            if (isMute)
+            {
+                if (!ContainsName(room->muteList, "*")) room->muteList.push_back("*");
+                SendToClientL10n(sock, "ROOM_MSG|", "已禁言全部玩家", "All players muted");
+            }
+            else
+            {
+                int total = (int)room->muteList.size();
+                room->muteList.clear();
+                SendToClientL10n(sock, "ROOM_MSG|", "已解除全部 %d 项禁言", "Unmuted all %d entries", total);
+                SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|", "房主解除了全部禁言", "Host lifted all mutes");
+            }
+            return;
+        }
+
+        vector<string> items = SplitTokens(argStr);
+        vector<string> applied;
+
+        for (const string& item : items)
+        {
+            if (isMute)
+            {
+                if (HasWildcard(item))
+                {
+                    string pat = NormalizeWildcards(item);
+                    pat = NormalizeWildcardPattern(pat);
+                    pat = CleanBanPattern(pat);
+
+                    if (pat.empty()) continue;
+
+                    if (!ContainsName(room->muteList, pat)) room->muteList.push_back(pat);
+                    applied.push_back(pat);
+                }
+                else
+                {
+                    // 房内槽位优先（槽号/名字）；不在房内的名字也直接入单
+                    // （防改名/重名变体绕过，与 BAN 对不在房名字的处理一致）
+                    int t = ResolveSlotOrName(room, item, sock);
+                    string nm = (t >= 0) ? room->slots[t].name : SanitizeName(item);
+
+                    if (nm.empty()) continue;
+
+                    if (!ContainsName(room->muteList, nm)) room->muteList.push_back(nm);
+                    applied.push_back(nm);
+                }
+            }
+            else
+            {
+                // UNMUTE：命中"精确名"或"覆盖该名字/该模式串的通配项"一并移除
+                bool removed = false;
+
+                for (size_t i = 0; i < room->muteList.size();)
+                {
+                    const string& e = room->muteList[i];
+                    bool hit = NameEquals(e, item) || (HasWildcard(e) && GlobMatch(e, item));
+
+                    if (hit)
+                    {
+                        room->muteList.erase(room->muteList.begin() + i);
+                        removed = true;
+                    }
+                    else
+                    {
+                        ++i;
+                    }
+                }
+
+                if (removed) applied.push_back(item);
+            }
+        }
+
+        if (applied.empty())
+        {
+            SendToClientL10n(sock, "ROOM_MSG|",
+                isMute ? "没有匹配的玩家" : "没有匹配的禁言项",
+                isMute ? "No matching players" : "No matching muted entries");
+            return;
+        }
+
+        string list;
+        for (size_t i = 0; i < applied.size(); ++i)
+        {
+            if (i > 0) list += "、";
+            list += applied[i];
+        }
+
+        if (isMute)
+        {
+            SendToClientL10n(sock, "ROOM_MSG|", "已禁言 %d 人：%s", "Muted %d players: %s",
+                (int)applied.size(), list.c_str());
+            SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|", "房主禁言了 %d 人：%s", "Host muted %d players: %s",
+                (int)applied.size(), list.c_str());
+        }
+        else
+        {
+            SendToClientL10n(sock, "ROOM_MSG|", "已解除 %d 项禁言：%s", "Unmuted %d entries: %s",
+                (int)applied.size(), list.c_str());
+        }
+        return;
+    }
+
+    if (upper == "PROXY_GAME")
+    {
+        // 客户端直连游戏端口失败时回退到 Start 中继（§20.7）：
+        // PROXY_GAME|<roomId>|<playerId>。可多次尝试——游戏服务器启动慢时
+        // 首次连不上，每次失败都会回 PROXY_FAIL|具体原因，由客户端决定重试
+        size_t bar2 = argStr.find('|');
+        if (bar2 == string::npos)
+        {
+            SendToClientL10n(sock, "PROXY_FAIL|", "格式错误", "Bad format");
+            return;
+        }
+
+        string rid = argStr.substr(0, bar2);
+        string pidStr = argStr.substr(bar2 + 1);
+
+        auto rit = g_rooms.find(rid);
+        if (rit == g_rooms.end())
+        {
+            SendToClientL10n(sock, "PROXY_FAIL|", "房间不存在", "Room not found");
+            return;
+        }
+
+        Room* r = rit->second.get();
+
+        if (!r->gameStarted)
+        {
+            SendToClientL10n(sock, "PROXY_FAIL|", "游戏未在运行", "Game is not running");
+            return;
+        }
+
+        // 归属校验：连接必须是本房成员本人，或 playerId 对得上房间内某玩家
+        // 的本局编号，防伪造房间号把别人的对局流量引到本连接
+        bool mine = (ci.roomId == rid);
+        int pid = atoi(pidStr.c_str());
+
+        if (!mine && pid > 0)
+        {
+            for (int i = 0; i < MAX_PLAYERS; ++i)
+            {
+                if (r->slots[i].gamePid == pid) { mine = true; break; }
+            }
+        }
+
+        if (!mine)
+        {
+            SendToClientL10n(sock, "PROXY_FAIL|", "无权为该房间建立中继", "Not allowed to relay for that room");
+            return;
+        }
+
+        if (GetRelayFor(sock))
+        {
+            SendToClientL10n(sock, "PROXY_FAIL|", "中继已建立，请勿重复申请", "Relay already established");
+            return;
+        }
+
+        SOCKET ps = ConnectWithTimeout("127.0.0.1", atoi(r->port.c_str()), 3000);
+
+        if (ps == INVALID_SOCKET)
+        {
+            SendToClientL10n(sock, "PROXY_FAIL|", "无法连接游戏服务器，请稍后重试", "Cannot connect to the game server, retry later");
+            return;
+        }
+
+        auto relay = make_shared<ProxyRelay>(sock, ps);
+        {
+            lock_guard<mutex> lk(g_proxiesMutex);
+            g_proxies[sock] = relay;
+        }
+
+        thread(ProxyForwardLoop, relay).detach();
+        SendToClient(sock, "PROXY_OK|" + rid);
+        return;
+    }
+
+    if (upper == "GAME_FWD")
+    {
+        // GAME_FWD|<行>：中继"上行"通道——剥掉前缀写给游戏服务器
+        // （PLAYER_ID 认领、游戏命令、心跳都走这里）。没建中继的连接发来
+        // 这行不是合法协议，静默忽略（不广播不报错，防伪造行刷屏）
+        RelayWriteLine(GetRelayFor(sock), argStr);
+        return;
+    }
+
     // 玩家命令统一按命令表分发：英文全名/英文短别名/中文别名等效（§11.2）
     const CommandEntry* cmd = FindCommand(upper);
 
     if (!cmd)
     {
-        // 兜底：房间内视为聊天（聊天内容原样透传，名字前缀+全角冒号 §10.1）
-        if (room)
+// 兜底：房间内视为聊天（聊天内容原样透传，名字前缀+全角冒号 §10.1）；
+    // 禁言名单命中的玩家只收私发驳回、不广播（§20.4）
+    if (room)
+    {
+        if (IsMuted(room, ci.name))
         {
-            string chat = SanitizeChat(line);
-            RoomMsg(room, ci.name + "：" + chat, sock);
+            SendToClientL10n(sock, "ROOM_MSG|", "你已被禁言，无法发言。", "You are muted; you cannot speak.");
+            return;
         }
+
+        string chat = SanitizeChat(line);
+
+        // 局外 at（§21）：@<名字或槽号> <内容>。广播与普通聊天完全一致
+        // （原样含 @ 前缀）；命中房内目标再补私发提醒，NPC 目标由 Start
+        // 代答。解析失败/目标是发送者自己 → atSlot=-1，只走普通广播
+        int atSlot = ParseAtTarget(room, chat, ci.slot);
+
+        RoomMsg(room, ci.name + "：" + chat, sock);
+
+        if (atSlot >= 0)
+        {
+            string content = chat.substr(chat.find(' ') + 1);
+            string targetName = room->slots[atSlot].name;
+            Slot& tg = room->slots[atSlot];
+
+            // NPC 无大厅连接：私发提醒无处可送，代它回一条（全员可见）
+            if (tg.isNpc)
+            {
+                NpcRoomAtReply(room, targetName, content);
+            }
+
+            // 目标有连接（真人/本地用户窗口）才私发提醒；游戏期断开的槽
+            // 只会命中广播与会话方提示，不会送信给空 socket
+            if (tg.sock != INVALID_SOCKET)
+            {
+                SendToClientL10n(tg.sock, "ROOM_MSG|",
+                    "你被 %s at了：%s", "You were @-ed by %s: %s",
+                    ci.name.c_str(), content.c_str());
+            }
+
+            SendToClientL10n(sock, "ROOM_MSG|", "你at了 %s", "You @-ed %s", targetName.c_str());
+        }
+    }
         else
         {
             SendToClientL10n(sock, "ERROR|", "不支持的命令", "Unknown command");
+        }
+
+        return;
+    }
+
+    if (strcmp(cmd->en, "UNADD") == 0)
+    {
+        // UNADD（§21）：ADD 的反向操作，房主专属，移除 NPC 或本地用户
+        //（真人拒绝，请走 PICK）。参数=槽号/名字（空格分隔多项）或 *（全部
+        // NPC/本地用户）。gameStarted 拒绝——本局角色不能中途拆；gameEnded
+        // 后允许（与 ADD/BAN 一起配合重开下一局）
+        if (!room || !ci.isAdmin)
+        {
+            SendToClientL10n(sock, "ERROR|", "只有房主可以执行该操作", "Only the host can do that");
+            return;
+        }
+
+        if (room->gameStarted)
+        {
+            SendToClientL10n(sock, "ERROR|", "游戏进行中不能移除", "Cannot remove during a game");
+            return;
+        }
+
+        if (argStr.empty())
+        {
+            SendToClientL10n(sock, "ROOM_MSG|",
+                "UNADD 用法：UNADD <槽号/名字>...（空格分隔多项；* 移除全部 NPC 与本地用户）",
+                "UNADD usage: UNADD <slot/name>... (space-separated; * removes all NPCs and local users)");
+            return;
+        }
+
+        vector<string> items = SplitTokens(argStr);
+
+        // 单目标（无通配）：严格校验，真人槽与未命中都给明确提示（同 PICK 单目标风格）
+        if (items.size() == 1 && !HasWildcard(items[0]))
+        {
+            int real = ResolveSlotOrName(room, items[0], sock);
+
+            if (real >= 0)
+            {
+                SendToClientL10n(sock, "ERROR|",
+                    "UNADD 只能移除 NPC 或本地用户（真人请用 PICK）",
+                    "UNADD can only remove NPCs or local users (use PICK for real players)");
+                return;
+            }
+
+            int target = ResolveNpcOrLocalSlot(room, items[0]);
+
+            if (target < 0)
+            {
+                SendToClientL10n(sock, "ERROR|",
+                    "目标玩家不存在：%s（不是房内的 NPC 或本地用户），请重新输入",
+                    "Target not found: %s (not an NPC or local user in this room). Try again.",
+                    items[0].c_str());
+                return;
+            }
+
+            string nm;
+            RemoveNpcOrLocalSlot(room, target, nm);
+            SendToClientL10n(sock, "ROOM_MSG|", "已移除 %s", "Removed %s", nm.c_str());
+            SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|",
+                "房主移除了 %s", "Host removed %s", nm.c_str());
+            return;
+        }
+
+        // 多目标/通配（含 *）：逐项解析去重；真人槽与未命中项静默跳过
+        //（多目标不做逐项报错，与 PICK 多目标行为一致），最后输出汇总
+        vector<int> targets;
+        vector<string> removedNames;
+
+        for (const string& item : items)
+        {
+            if (item == "*" || HasWildcard(item))
+            {
+                string pat = NormalizeWildcards(item);
+                pat = CleanBanPattern(pat);
+
+                if (pat.empty()) continue;
+
+                for (int i = 0; i < MAX_PLAYERS; ++i)
+                {
+                    if (room->slots[i].isNpc || room->slots[i].isLocalUser)
+                    {
+                        if (!room->slots[i].name.empty() &&
+                            GlobMatch(pat, room->slots[i].name) &&
+                            find(targets.begin(), targets.end(), i) == targets.end())
+                        {
+                            targets.push_back(i);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                int real = ResolveSlotOrName(room, item, sock);
+
+                if (real >= 0) continue;
+
+                int t = ResolveNpcOrLocalSlot(room, item);
+
+                if (t >= 0 && find(targets.begin(), targets.end(), t) == targets.end())
+                {
+                    targets.push_back(t);
+                }
+            }
+        }
+
+        if (targets.empty())
+        {
+            SendToClientL10n(sock, "ROOM_MSG|", "没有匹配的玩家", "No matching players");
+            return;
+        }
+
+        for (int t : targets)
+        {
+            string nm;
+            RemoveNpcOrLocalSlot(room, t, nm);
+            removedNames.push_back(nm);
+            SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|",
+                "房主移除了 %s", "Host removed %s", nm.c_str());
+        }
+
+        if (removedNames.size() == 1)
+        {
+            SendToClientL10n(sock, "ROOM_MSG|", "已移除 %s", "Removed %s", removedNames[0].c_str());
+        }
+        else
+        {
+            string list;
+
+            for (size_t i = 0; i < removedNames.size(); ++i)
+            {
+                if (i > 0) list += "、";
+                list += removedNames[i];
+            }
+
+            SendToClientL10n(sock, "ROOM_MSG|", "已移除 %d 个：%s", "Removed %d: %s",
+                (int)removedNames.size(), list.c_str());
         }
 
         return;
@@ -2144,21 +3061,22 @@ void HandleCommand(SOCKET sock, const string& line)
             return;
         }
 
-        int target = ResolveSlotOrName(room, argStr, sock);
-
-        if (target < 0)
-        {
-            // 提示带原始参数与重输指引：参数既可能是槽号也可能是名字，
-            // 给出原文让房主对照自己输入哪里不对；%s 传参防格式串注入
-            SendToClientL10n(sock, "ERROR|",
-                "目标玩家不存在：%s（不是房内玩家的编号或名字），请重新输入",
-                "Target not found: %s (not a slot number or a name in this room). Try again.",
-                argStr.c_str());
-            return;
-        }
-
+        // TRANSFER 永远是单目标：解析失败即报错返回（不能"把房主转给多人"）
         if (strcmp(cmd->en, "TRANSFER") == 0)
         {
+            int target = ResolveSlotOrName(room, argStr, sock);
+
+            if (target < 0)
+            {
+                // 提示带原始参数与重输指引：参数既可能是槽号也可能是名字，
+                // 给出原文让房主对照自己输入哪里不对；%s 传参防格式串注入
+                SendToClientL10n(sock, "ERROR|",
+                    "目标玩家不存在：%s（不是房内玩家的编号或名字），请重新输入",
+                    "Target not found: %s (not a slot number or a name in this room). Try again.",
+                    argStr.c_str());
+                return;
+            }
+
             // NPC 无大厅连接，收不到房主通知，转移房主给 NPC 无意义（§19.7）
             if (room->slots[target].isNpc)
             {
@@ -2177,24 +3095,56 @@ void HandleCommand(SOCKET sock, const string& line)
                 ci.name.c_str(), room->slots[target].name.c_str());
             SendToClientL10n(room->slots[target].sock, "ROOM_MSG|",
                 "%s 已转交房主给你", "%s transferred the host to you", ci.name.c_str());
+            return;
         }
-        else
+
+        // ---- PICK（§20.5：多目标与通配） ----
+
+        vector<string> items = SplitTokens(argStr);
+
+        // 单目标（无通配）：完全走原有实现，文案与既有断言依赖不变
+        if (items.size() == 1 && !HasWildcard(items[0]))
         {
-            // 同上：游戏中的玩家大厅 sock 已断，此处不可达（死代码，§13.2）
-            string kickedName = room->slots[target].name;
+            int target = ResolveSlotOrName(room, items[0], sock);
 
-            if (room->slots[target].isNpc)
+            if (target < 0)
             {
-                // PICK NPC = 移除 NPC（无 socket 走不了 Eject，直接清标记减人数）
-                room->slots[target].isNpc = false;
-                room->slots[target].npcOnline = false;
-                room->slots[target].name.clear();
-                room->slots[target].ip.clear();
-                room->slots[target].gamePid = 0;
-                room->playerCount = max(0, room->playerCount - 1);
+                // 本地用户可能没连大厅（游戏中/结束未回房）：ResolveSlotOrName
+                // 按 socket 找它不到，按 isLocalUser 标记补一次（NPC 同理）
+                target = ResolveNpcOrLocalSlot(room, items[0]);
+            }
 
-                SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|",
-                    "房主移除了 NPC：%s", "Host removed NPC: %s", kickedName.c_str());
+            if (target < 0)
+            {
+                SendToClientL10n(sock, "ERROR|",
+                    "目标玩家不存在：%s（不是房内玩家的编号或名字），请重新输入",
+                    "Target not found: %s (not a slot number or a name in this room). Try again.",
+                    items[0].c_str());
+                return;
+            }
+
+            string kickedName = room->slots[target].name;
+            bool wasNpc = room->slots[target].isNpc;
+
+            if (room->slots[target].isNpc || room->slots[target].isLocalUser)
+            {
+                // PICK NPC/本地用户 = 移除（无 socket 走不了 Eject，直接清标记
+                // 减人数、杀本地用户窗口）。NPC 广播沿用既有文案（测试断言依赖
+                // 「房主移除了 NPC：」），本地用户用通用移除文案
+                string nm;
+                RemoveNpcOrLocalSlot(room, target, nm);
+
+                if (wasNpc)
+                {
+                    SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|",
+                        "房主移除了 NPC：%s", "Host removed NPC: %s", kickedName.c_str());
+                }
+                else
+                {
+                    SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|",
+                        "房主移除了 %s", "Host removed %s", nm.c_str());
+                }
+
                 return;
             }
 
@@ -2203,36 +3153,114 @@ void HandleCommand(SOCKET sock, const string& line)
 
             // 控制者被 PICK → 其本地用户一并移除（§19.6）：杀窗口进程（断线
             // 清理会清槽减数），并从记录删除；本地用户被 PICK 同样处理
-            for (size_t li = 0; li < room->localUsers.size();)
-            {
-                bool match = NameEquals(room->localUsers[li].name, kickedName)
-                    || room->localUsers[li].ownerSlot == target;
-
-                if (match)
-                {
-                    DWORD pid = room->localUsers[li].pid;
-
-                    if (pid != 0 && pid != GetCurrentProcessId())
-                    {
-                        HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-
-                        if (h)
-                        {
-                            TerminateProcess(h, 1);
-                            CloseHandle(h);
-                        }
-                    }
-
-                    room->localUsers.erase(room->localUsers.begin() + li);
-                }
-                else
-                {
-                    ++li;
-                }
-            }
+            RemoveLocalUsersForSlot(room, target, kickedName);
 
             EjectPlayerFromRoom(room, target, "你已被房主移出房间", "You were kicked by the host");
             SendToClientL10n(sock, "ROOM_MSG|", "已移出 %s", "Removed %s", kickedName.c_str());
+            return;
+        }
+
+        // 多目标 / 通配：逐项解析命中（槽号/名字去重；通配按名字匹配房内
+        // 真人/NPC/本地用户，槽 0 房主除外），最后输出汇总
+        vector<int> targets;
+
+        for (const string& item : items)
+        {
+            if (!HasWildcard(item))
+            {
+                int t = ResolveSlotOrName(room, item, sock);
+
+                if (t < 0)
+                {
+                    // 本地用户可能没连大厅：按标记补一次（与单目标一致）
+                    t = ResolveNpcOrLocalSlot(room, item);
+                }
+
+                if (t >= 0 && find(targets.begin(), targets.end(), t) == targets.end())
+                {
+                    targets.push_back(t);
+                }
+                continue;
+            }
+
+            string pat = NormalizeWildcards(item);
+            pat = CleanBanPattern(pat);
+
+            if (pat.empty()) continue;
+
+            for (int i = 1; i < MAX_PLAYERS; ++i)
+            {
+                // 通配扫描要含"没连大厅的本地用户"（sock 无效、SlotOccupied 为
+                // 假）；游戏期断开的真人槽（名字保留等 REJOIN）不能命中
+                bool slotted = SlotOccupied(room->slots[i]) || room->slots[i].isLocalUser;
+
+                if (!slotted || room->slots[i].sock == sock) continue;
+
+                if (GlobMatch(pat, room->slots[i].name) &&
+                    find(targets.begin(), targets.end(), i) == targets.end())
+                {
+                    targets.push_back(i);
+                }
+            }
+        }
+
+        if (targets.empty())
+        {
+            SendToClientL10n(sock, "ROOM_MSG|", "没有匹配的玩家", "No matching players");
+            return;
+        }
+
+        vector<string> kickedNames;
+
+        for (int t : targets)
+        {
+            string nm = room->slots[t].name;
+            bool wasNpc = room->slots[t].isNpc;
+
+            if (room->slots[t].isNpc || room->slots[t].isLocalUser)
+            {
+                string goneName;
+                RemoveNpcOrLocalSlot(room, t, goneName);
+
+                if (wasNpc)
+                {
+                    SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|",
+                        "房主移除了 NPC：%s", "Host removed NPC: %s", nm.c_str());
+                }
+                else
+                {
+                    SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|",
+                        "房主移除了 %s", "Host removed %s", goneName.c_str());
+                }
+
+                kickedNames.push_back(nm);
+                continue;
+            }
+
+            room->banName = nm;
+            room->banUntil = time(nullptr) + BAN_SECONDS;
+
+            RemoveLocalUsersForSlot(room, t, nm);
+
+            EjectPlayerFromRoom(room, t, "你已被房主移出房间", "You were kicked by the host");
+            kickedNames.push_back(nm);
+        }
+
+        if (kickedNames.size() == 1)
+        {
+            SendToClientL10n(sock, "ROOM_MSG|", "已移出 %s", "Removed %s", kickedNames[0].c_str());
+        }
+        else
+        {
+            string list;
+            for (size_t i = 0; i < kickedNames.size(); ++i)
+            {
+                if (i > 0) list += "、";
+                list += kickedNames[i];
+            }
+
+            SendToClientL10n(sock, "ROOM_MSG|", "已踢出 %d 人：%s", "Kicked %d players: %s",
+                (int)kickedNames.size(), list.c_str());
         }
         return;
     }
@@ -2255,8 +3283,21 @@ void HandleCommand(SOCKET sock, const string& line)
 
         Log("BANCMD enter " + argStr + " tick=" + to_string(GetTickCount64()) + " sock=" + to_string(sock) + " hostName=" + ci.name);
 
-        // 游戏中禁 BAN：整条命令拒绝（UNBAN 无此约束，维持现状）
-        if (isBan && (room->gameStarted || room->gameEnded))
+        // UNBAN ALL：清空整个黑名单（名字+IP），输出解除总数（§20.8）。
+        // 大小写不敏感；放最前，防 ALL 被当名字走精确项路径
+        if (!isBan && _stricmp(argStr.c_str(), "ALL") == 0)
+        {
+            int total = (int)room->bannedNames.size() + (int)room->bannedIps.size();
+            room->bannedNames.clear();
+            room->bannedIps.clear();
+            SendToClientL10n(sock, "ROOM_MSG|", "已解除全部 %d 项拉黑", "All %d bans lifted", total);
+            return;
+        }
+
+        // 游戏中禁 BAN：整条命令拒绝（UNBAN 无此约束，维持现状）。
+        // 本局已结束（gameEnded）后允许拉黑——下一局可能重开，配置期与
+        // 对局前行为一致（需求 3）
+        if (isBan && room->gameStarted)
         {
             SendToClientL10n(sock, "ERROR|", "游戏已在进行中，不能拉黑", "Cannot ban during a game");
             return;
@@ -2340,8 +3381,15 @@ void HandleCommand(SOCKET sock, const string& line)
                 }
 
                 // 先按房间内玩家（槽号或名字）解析，在房则踢出并拉黑；
-                // 不在房则按名字直接入黑名单（之后无法加入）
+                // 不在房则按名字直接入黑名单（之后无法加入）。NPC/本地用户槽无 socket
+                // 时 ResolveSlotOrName 找不到，按标记补一次（需求 2：BAN 命中
+                // NPC/本地用户时，除入黑名单外同时拆槽、杀本地用户窗口）
                 int target = ResolveSlotOrName(room, argStr, sock);
+
+                if (target < 0)
+                {
+                    target = ResolveNpcOrLocalSlot(room, argStr);
+                }
 
                 if (target >= 0)
                 {
@@ -2352,8 +3400,19 @@ void HandleCommand(SOCKET sock, const string& line)
                         room->bannedNames.push_back(bannedName);
                     }
 
-                    EjectPlayerFromRoom(room, target, "你已被房主拉黑并移出房间", "You were banned and removed by the host");
-                    SendToClientL10n(sock, "ROOM_MSG|", "已拉黑 %s", "Banned %s", bannedName.c_str());
+                    if (room->slots[target].isNpc || room->slots[target].isLocalUser)
+                    {
+                        string nm;
+                        RemoveNpcOrLocalSlot(room, target, nm);
+                        SendToClientL10n(sock, "ROOM_MSG|", "已拉黑 %s", "Banned %s", bannedName.c_str());
+                        SendToAllL10n(room, INVALID_SOCKET, "ROOM_MSG|",
+                            "房主移除了 %s", "Host removed %s", nm.c_str());
+                    }
+                    else
+                    {
+                        EjectPlayerFromRoom(room, target, "你已被房主拉黑并移出房间", "You were banned and removed by the host");
+                        SendToClientL10n(sock, "ROOM_MSG|", "已拉黑 %s", "Banned %s", bannedName.c_str());
+                    }
                 }
                 else
                 {
@@ -2781,8 +3840,8 @@ void HandleCommand(SOCKET sock, const string& line)
         if (!room)
         {
             SendToClientL10n(sock, "ROOM_MSG|",
-                "SHOW 用法：SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD>——查看黑名单、比例、职业档位、村民开关、自动开局、本地用户与 NPC（LOOK 同效）",
-                "SHOW usage: SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD> - view ban list, ratio, role level, villager switch, auto-start, local users and NPCs (LOOK works too)");
+                "SHOW 用法：SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE>——查看黑名单、比例、职业档位、村民开关、自动开局、本地用户与 NPC、禁言名单（LOOK 同效）",
+                "SHOW usage: SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE> - view ban list, ratio, role level, villager switch, auto-start, local users and NPCs, and the mute list (LOOK works too)");
             return;
         }
 
@@ -2909,23 +3968,63 @@ void HandleCommand(SOCKET sock, const string& line)
             return;
         }
 
+        if (sub == "MUTE")
+        {
+            if (!ci.isAdmin)
+            {
+                SendToClientL10n(sock, "ERROR|", "只有房主可以执行该操作", "Only the host can do that");
+                return;
+            }
+
+            if (room->muteList.empty())
+            {
+                SendToClientL10n(sock, "ROOM_MSG|",
+                    "当前没有禁言。SHOW MUTE 用法：查看本房禁言名单（名字与通配模式）",
+                    "No mutes currently. SHOW MUTE usage: show this room's mute list (names and wildcard patterns)");
+                return;
+            }
+
+            string out = "Muted List";
+
+            for (const string& mn : room->muteList)
+            {
+                out += "\n";
+                out += HasWildcard(mn) ? "模式：" : "名字：";
+                out += mn;
+            }
+
+            SendToClient(sock, "ROOM_MSG|" + out);
+            return;
+        }
+
         SendToClientL10n(sock, "ROOM_MSG|",
-            "SHOW 用法：SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD>——查看黑名单、比例、职业档位、村民开关、自动开局、本地用户与 NPC（LOOK 同效）",
-            "SHOW usage: SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD> - view ban list, ratio, role level, villager switch, auto-start, local users and NPCs (LOOK works too)");
+            "SHOW 用法：SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE>——查看黑名单、比例、职业档位、村民开关、自动开局、本地用户与 NPC、禁言名单（LOOK 同效）",
+            "SHOW usage: SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE> - view ban list, ratio, role level, villager switch, auto-start, local users and NPCs, and the mute list (LOOK works too)");
         return;
     }
 
     if (strcmp(cmd->en, "ADD") == 0)
     {
         // ADD USER <username> [-u] <玩家名或槽位>：添加本地用户（新窗口由
-        // 指定玩家控制，无 -u 默认房主）；ADD NPC [名字] on|off：添加 NPC
-        if (!room || !ci.isAdmin)
+        // 指定玩家控制，无 -u 默认房主）；ADD NPC [名字] on|off：添加 NPC。
+        // §20.6：无房间（大厅）先给入房指引（旧谓词"大厅可用"改为"房间内"
+        // 可用，避免大厅误以为是全局命令）
+        if (!room)
+        {
+            SendToClientL10n(sock, "ROOM_MSG|",
+                "请先创建或加入房间后再使用 ADD（添加本地用户/NPC）",
+                "Create or join a room first, then use ADD (local user / NPC)");
+            return;
+        }
+
+        if (!ci.isAdmin)
         {
             SendToClientL10n(sock, "ERROR|", "只有房主可以执行该操作", "Only the host can do that");
             return;
         }
 
-        if (room->gameStarted || room->gameEnded)
+        // 游戏中禁添加；本局已结束（gameEnded）后允许——补人配下一局（需求 3）
+        if (room->gameStarted)
         {
             SendToClientL10n(sock, "ERROR|", "游戏已在进行中，不能添加", "Cannot add during a game");
             return;
@@ -3319,6 +4418,19 @@ void HandleClientInner(SOCKET sock)
 
     // 断线清理（心跳失联与正常断线共用同一收尾）
     {
+        // 中继模式下先通知转发线程收尾：它会在至多 1 秒内关闭游戏侧连接
+        // 并注销中继；客户端侧的 socket 仍由本线程自己关闭（转发线程绝不
+        // 碰 clientSock，防两线程双 closesocket 后句柄复用误杀新连接）
+        {
+            lock_guard<mutex> lk(g_proxiesMutex);
+            auto pit = g_proxies.find(sock);
+
+            if (pit != g_proxies.end())
+            {
+                pit->second->alive = false;
+            }
+        }
+
         lock_guard<mutex> lockRooms(g_roomsMutex);
         lock_guard<mutex> lockClients(g_clientsMutex);
 

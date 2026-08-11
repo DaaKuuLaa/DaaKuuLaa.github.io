@@ -252,6 +252,7 @@ const CommandEntry COMMANDS[] = {
     { "CONFIRM", "同意",     "CF",  "<1|0>",        "【房主】对自动配置结果确认（1 同意 / 0 拒绝）", "[Host] Confirm auto config (1 agree / 0 reject)", CMD_GROUP_ROOM },
     { "SHOW",    "查看",     "LOOK","<BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD>", "查看黑名单/比例/配置/本地用户与 NPC（LOOK 等效）", "Show ban list / ratio / config / local users and NPCs (LOOK alias)", CMD_GROUP_ROOM },
     { "ADD",     "添加",     "",    "<USER <名字> [-u] <玩家> | NPC [名字] on|off>", "【房主】添加本地用户（新窗口，由指定玩家控制）或 NPC（on=在线 AI，off=离线逻辑）", "[Host] Add a local user (new window, controlled by a player) or an NPC (on=online AI, off=offline logic)", CMD_GROUP_ROOM },
+    { "UNADD",   "移除",     "UA",  "<槽号/名字/通配/ALL>", "【房主】移除 NPC 或本地用户（真人请用 PICK；* 移除全部；游戏进行中不可用）", "[Host] Remove NPCs or local users (use PICK for real players; * removes all; unavailable during a game)", CMD_GROUP_ROOM },
     // ---- 游戏 ----
     { "VOTE",    "投票",     "V",   "<编号>",       "白天投票放逐（编号=槽位，0 弃权）", "Vote to exile (number=slot, 0 abstain)", CMD_GROUP_GAME },
     { "BOMB",    "自爆",     "B",   "<编号>",       "白狼王白天自爆（带走一名玩家进夜晚）", "White Wolf King bomb (take one player into night)", CMD_GROUP_GAME },

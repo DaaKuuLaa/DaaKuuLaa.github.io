@@ -1630,6 +1630,8 @@ static const HelpDetail HELP_DETAILS[] = {
                "LOOK <item>: view room info, fully equivalent to SHOW (see HELP SHOW)." },
     { "ADD", "ADD USER <username> [-u] <玩家名或槽位>：添加本地用户占槽位（开局自动开窗进游戏；无 -u 默认由房主控制，-u 指定控制者）。ADD NPC [NPCname] on|off：添加 NPC（on 在线 AI / off 离线逻辑）。【房主】【大厅可用】",
                "ADD USER <username> [-u] <player or slot>: add a local user taking a slot (a client window auto-launches at game start; control defaults to the host, -u picks the controller). ADD NPC [NPCname] on|off: add an NPC (on=online AI, off=offline logic). [Host][Lobby]" },
+    { "UNADD", "UNADD <槽号/名字/...>（短别名 UA，* 移除全部）：移除 NPC 或本地用户槽，真人玩家请用 PICK；空格分隔多项；游戏进行中不可用，游戏结束后允许。【房主】",
+               "UNADD <slot/name/...> (alias UA, * removes all): remove NPC or local-user slots; use PICK for real players; space-separated; unavailable during a game, allowed after it ends. [Host]" },
     { "BAN", "BAN <名字/IP/通配模式或 .ban 文件>：拉黑玩家或 IP，命中即拒绝入房并踢出房内同匹配者。支持 *（任意位数）与 ?（1 位）通配（全角 ＊？等效）；空格分隔批量；.ban 文件逐行导入。【房主】",
                "BAN <name/IP/wildcard or .ban file>: ban players or IPs; matched joins are rejected and in-room matches are kicked. Wildcards * (any digits) and ? (one digit), full-width ＊？equivalent; space-separated batch; .ban files import line by line. [Host]" },
     { "UNBAN", "UNBAN <名字/IP/通配模式或 .ban 文件>：取消拉黑，按模式串精确删除；批量与 .ban 文件导入同 BAN。【房主】",
@@ -2061,6 +2063,14 @@ void HandleCommand(const string& line)
             return;
         }
 
+        if (_stricmp(cmd->en, "UNADD") == 0)
+        {
+            // 移除 NPC/本地用户（房主专属，§21）：参数原样转发，不做本地拦截
+            // ——空参数、权限、存在性与游戏期门全部由 Start 侧完成/应答
+            SendRaw(string(cmd->en) + "|" + SanitizeChat(args));
+            return;
+        }
+
         if (_stricmp(cmd->en, "IP") == 0)
         {
             // 房主查询玩家 IP：转发给 Start，权限（房主专属）由服务端校验
@@ -2146,6 +2156,7 @@ void HandleCommand(const string& line)
         || _stricmp(cmd->en, "UNBAN") == 0
         || _stricmp(cmd->en, "MUTE") == 0
         || _stricmp(cmd->en, "UNMUTE") == 0
+        || _stricmp(cmd->en, "UNADD") == 0
         || _stricmp(cmd->en, "IP") == 0
         || _stricmp(cmd->en, "LG") == 0
         || _stricmp(cmd->en, "LEVEL") == 0

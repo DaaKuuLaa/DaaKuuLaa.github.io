@@ -304,13 +304,9 @@ function Run-NightGame($port) {
                         $t = Get-SeerTarget $bots $b.k
                         if ($t -gt 0) { SendLine $b ('PLAYER_' + $b.k + '|' + $t) }
                     } elseif ($b.role -eq 'witch') {
-                        # 解药救狼刀目标（可自救），毒药弃用
-                        if ($b.witchInputs -eq 0) {
-                            $t = Get-WolfTarget $bots
-                            if ($t -gt 0) { SendLine $b ('PLAYER_' + $b.k + '|' + $t) }
-                        } else {
-                            SendLine $b ('PLAYER_' + $b.k + '|0')
-                        }
+                        # 新协议（§20.1）：解药问 1/0（1=救狼刀目标，直接救，无目标输入），
+                        # 毒药问 1/0（1=之后还要输目标）→ 两问都答 0：不救不毒，流程最快推进
+                        SendLine $b ('PLAYER_' + $b.k + '|0')
                         $b.witchInputs++
                     } else {
                         SendLine $b ('PLAYER_' + $b.k + '|0')
