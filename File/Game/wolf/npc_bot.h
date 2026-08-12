@@ -1112,7 +1112,7 @@ inline string NpcMentionTopic(const NpcContext& ctx)
     return labels[bestIdx];
 }
 
-// ============ 发言模板（每类 ≥5 变体随机） ============
+// ============ 发言模板（每类 ≥8 变体随机，语言尽量自然不重复） ============
 
 // 模板占位符填充：{n}=槽号 {name}=名字 {res}=验人结果 {role}=职业名。
 // 用替换而不是 sprintf 变体，避免各模板占位符顺序不一致时参数错位
@@ -1130,6 +1130,56 @@ inline string NpcFill(const string& tmpl, const string& n, const string& name,
     return s;
 }
 
+// 从聊天内容里取第一个"词"：跳过开头标点/空白，到中文或英文标点/空白截止，
+// 限 16 字节防超长内容把模板撑爆。抽不出词返回空串（调用方给兜底词）。
+// 房内/局内 @ 应答与话题回应共用，让回复"看起来真的在接话"
+inline string NpcPickWord(const string& content)
+{
+    string w;
+
+    for (char c : content)
+    {
+        if (c == ' ' || c == '\t' || c == '、' || c == '，' || c == ',' ||
+            c == '。' || c == '.' || c == '！' || c == '!' || c == '？' ||
+            c == '?' || c == '；' || c == ';' || c == '：' || c == ':')
+        {
+            if (!w.empty()) break;
+
+            continue;
+        }
+
+        w += c;
+
+        if (w.size() >= 16) break;
+    }
+
+    return w;
+}
+
+// 从聊天历史里取"最后一行发言的来源名字"：行格式"名字：内容"，
+// 取最后一个非空行里第一个全角冒号前的部分（被提及回应判断用）
+inline string NpcLastSpeaker(const string& lastChat)
+{
+    string ln;
+
+    for (size_t i = 0; i < lastChat.size(); ++i)
+    {
+        if (lastChat[i] == '\n')
+        {
+            ln.clear();
+            continue;
+        }
+
+        ln += lastChat[i];
+    }
+
+    size_t c = ln.find('：');
+
+    if (c != string::npos) return ln.substr(0, c);
+
+    return "";
+}
+
 // 验人结果词规范化：原始标签转发言用词（好人→金水），
 // 未识别结果报金水而不是乱报狼人，避免编造查杀冤枉好人
 inline string NpcResultWord(const string& raw)
@@ -1141,7 +1191,7 @@ inline string NpcResultWord(const string& raw)
     return "金水";
 }
 
-// 预言家报验人模板（5 变体随机）
+// 预言家报验人模板（8 变体随机）
 inline string NpcSeerReport(const string& n, const string& name, const string& res)
 {
     static const char* const V[] = {
@@ -1150,12 +1200,15 @@ inline string NpcSeerReport(const string& n, const string& name, const string& r
         "我是预言家。昨晚验了{name}（{n}号），{res}。",
         "报个验人：{n}号{name}是{res}。",
         "昨晚验{n}号{name}，{res}。信我就票型跟上。",
+        "悄悄说一句：我验了{n}号{name}，结果是{res}。",
+        "验人结果出来了：{name}（{n}号）是{res}，情报量还可以。",
+        "我昨晚查验了{n}号，{name}，{res}。这轮信息我先亮出来。",
     };
 
-    return NpcFill(V[NpcRandInt(0, 4)], n, name, res, "");
+    return NpcFill(V[NpcRandInt(0, 7)], n, name, res, "");
 }
 
-// 首日发言模板（5 变体随机；第一天没信息，只表水不带节奏）。
+// 首日发言模板（8 变体随机；第一天没信息，只表水不带节奏）。
 // topic 是聊天高频词：首日就出现话题词说明有人在带节奏，点一句留给后续观察
 inline string NpcFirstDaySpeech(const string& selfName, const string& topic = "")
 {
@@ -1165,6 +1218,9 @@ inline string NpcFirstDaySpeech(const string& selfName, const string& topic = ""
         "首日不急着出人，等有身份的人发言后再判断。",
         "我是好人阵营，建议今天认真听发言，别盲投。",
         "第一天先观察，谁的发言明显带节奏，我重点留意。",
+        "刚开局没什么信息，我先进场露个面：都是好人，谨慎第一票。",
+        "第一天关键要看发言质量，我先潜水听一轮再做打算。",
+        "大家好，我是{name}。首日没啥线索，先聊着，看谁话多谁心虚。",
     };
     static const char* const TV[] = {
         "我是{name}。第一天先听发言，我注意到{tp}的话题，暂不投票。",
@@ -1172,16 +1228,19 @@ inline string NpcFirstDaySpeech(const string& selfName, const string& topic = ""
         "首日不急着出人，{tp}这事等有身份的人表态后再判断。",
         "我是好人阵营，今天认真听发言。{tp}我这边先观察。",
         "第一天先观察，{tp}的风向我会重点留意。",
+        "{tp}这两个字今天被反复提，我闻着有点味道，先记下。",
+        "首日讨论里{tp}出现得有点频繁，不急着下结论，但要留心。",
+        "我对{tp}不熟，不过既然有人聊，那就跟着理一理思路。",
     };
 
-    if (topic.empty()) return NpcFill(V[NpcRandInt(0, 4)], "", selfName, "", "");
+    if (topic.empty()) return NpcFill(V[NpcRandInt(0, 7)], "", selfName, "", "");
 
-    string s = NpcReplacePh(TV[NpcRandInt(0, 4)], "{tp}", topic);
+    string s = NpcReplacePh(TV[NpcRandInt(0, 7)], "{tp}", topic);
 
     return NpcReplacePh(s, "{name}", selfName);
 }
 
-// 表水/怀疑模板（5 变体随机，点名怀疑对象；无目标时用通用表水）。
+// 表水/怀疑模板（8 变体随机，点名怀疑对象；无目标时用通用表水）。
 // topic 非空且无点名目标时：聊"话题本身"替代点名，避免永远没人带话题
 inline string NpcSuspectSpeech(const string& name, const string& topic = "")
 {
@@ -1191,6 +1250,9 @@ inline string NpcSuspectSpeech(const string& name, const string& topic = "")
         "{name}这轮发言很可疑，大家盯一下他的票型。",
         "我暂时怀疑{name}，还想再观察观察。",
         "听了这么久，{name}的嫌疑最大。",
+        "{name}要么是狼，要么就是太着急了，两说之下我先不投他。",
+        "相比之下，{name}的发言含金量最低，票型见真章。",
+        "我留意{name}很久了，这轮他的立场一直在飘，不太对劲。",
     };
     static const char* const TV[] = {
         "我觉得{tp}那边有问题，大家盯一下。",
@@ -1198,6 +1260,9 @@ inline string NpcSuspectSpeech(const string& name, const string& topic = "")
         "我重点关注{tp}，投票前大家再想想。",
         "提到{tp}我就多留个心眼，先记一笔。",
         "{tp}的风向太整齐了，我怕有人带节奏。",
+        "{tp}这条线信息量很大，但真假难辨，建议多听几家说法。",
+        "各位，把{tp}话题再展开讲讲呗，目前还云里雾里。",
+        "谁把{tp}这事说得头头是道，谁就值得多审视几眼。",
     };
     static const char* const GV[] = {
         "这轮发言我没什么头绪，先站好人边。",
@@ -1205,31 +1270,73 @@ inline string NpcSuspectSpeech(const string& name, const string& topic = "")
         "今天节奏有点乱，希望有人带头梳理一下。",
         "我先表水：我是好人，听听大家的意见。",
         "这轮先听别人的发言，我晚点给结论。",
+        "信息有限，我这轮不好下判断，跟大流的谨慎版。",
+        "先不急着表态，我想再听两轮发言找找突破口。",
+        "这局面我看不太懂，但有一说一，盲投是最亏的选择。",
     };
 
-    if (!name.empty()) return NpcFill(V[NpcRandInt(0, 4)], "", name, "", "");
+    if (!name.empty()) return NpcFill(V[NpcRandInt(0, 7)], "", name, "", "");
 
-    if (!topic.empty()) return NpcReplacePh(TV[NpcRandInt(0, 4)], "{tp}", topic);
+    if (!topic.empty()) return NpcReplacePh(TV[NpcRandInt(0, 7)], "{tp}", topic);
 
-    return GV[NpcRandInt(0, 4)];
+    return GV[NpcRandInt(0, 7)];
 }
 
-// 被 @ 时的回应模板（5 变体随机；直接答而不复读对方全文——
-// atTarget 里含「去头内容+完整原始行」，整段塞进发言会显得复读机）
-inline string NpcAtReply()
+// 被 @ 时的回应模板（8 变体随机；把对方内容里的词嵌进一半模板，
+// 让回复看起来真的在接话而不是复读机——atTarget 里含「去头内容+完整
+// 原始行」，不能整段塞进发言）
+inline string NpcAtReply(const string& content = "")
 {
-    static const char* const V[] = {
+    static const char* const XV[] = {
+        "你提到{x}，我来说说对这个点的看法。",
+        "谈到{x}，我的思路是暂缓下结论，再观察一票。",
+        "{x}这事值得展开，我认为得结合票型一起看。",
+        "关于{x}，我表个态：先观察，不急着下判断。",
+        "既然话到{x}这了，我就补充两句个人看法。",
+        "你点到{x}，我确实有留意过这方向，稍后细说。",
+        "围绕{x}的讨论，我倾向再多听一家之言。",
+        "{x}这个话题我可以给个回应：暂时没有更多信息，先旁观。",
+    };
+    static const char* const GV[] = {
         "收到，我来说说对这个点的看法。",
         "既然有人点名我，我就着这个话题回应两句。",
         "被@了，我表个态：先观察局势，不急着下结论。",
         "好的，我针对这个点补充下意见，供大家参考。",
         "回应一下刚提到我的发言：谨慎为上，再看票型。",
+        "这个点我记下了，晚点结合全场讨论再给结论。",
+        "点名收到，立场不变：好人阵营，看证据说话。",
+        "行，这话题我接一下：目前持观望态度，别被带偏。",
     };
 
-    return V[NpcRandInt(0, 4)];
+    string w = NpcPickWord(content);
+
+    if (!w.empty() && NpcRandChance(70)) return NpcReplacePh(XV[NpcRandInt(0, 7)], "{x}", w);
+
+    return GV[NpcRandInt(0, 7)];
 }
 
-// 投票宣言模板（5 变体随机）
+// 被提及（未 @）时的回应模板：对方聊天行里直接出现了自己的名字，
+// 属于"被动点到"——同样要显得自己在线
+inline string NpcMentionedReply(const string& speaker)
+{
+    static const char* const SV[] = {
+        "有人提起我？{x}你说，我在听。",
+        "{x}聊到我了吗？那我插一句：目前我表态保持中立。",
+        "听见{x}在说我，正好刷一下存在感：我在线。",
+        "{x}刚说我？我这就来回应两句。",
+    };
+    static const char* const GV[] = {
+        "我好像被点名了，来听听大家怎么说。",
+        "有人在讨论我，那就别客气，我加入一下。",
+        "被讨论到了，我出来说句话，省得大家猜。",
+    };
+
+    if (!speaker.empty() && NpcRandChance(60)) return NpcReplacePh(SV[NpcRandInt(0, 3)], "{x}", speaker);
+
+    return GV[NpcRandInt(0, 2)];
+}
+
+// 投票宣言模板（8 变体随机）
 inline string NpcVoteSpeech(const string& name)
 {
     static const char* const V[] = {
@@ -1238,12 +1345,15 @@ inline string NpcVoteSpeech(const string& name)
         "今天先出{name}，我投他。",
         "我的票投给{name}。",
         "票{name}，理由前面已经说过了。",
+        "{name}的狼面最大，这一票我押他。",
+        "不纠结了，今天就{name}，票跟上。",
+        "{name}，就你了，这轮不投你投谁。",
     };
 
-    return NpcFill(V[NpcRandInt(0, 4)], "", name, "", "");
+    return NpcFill(V[NpcRandInt(0, 7)], "", name, "", "");
 }
 
-// 遗言模板（5 变体随机，报身份+怀疑；无目标时用通用遗言）
+// 遗言模板（8 变体随机，报身份+怀疑；无目标时用通用遗言）
 inline string NpcLastwordSpeech(const string& roleZh, const string& name)
 {
     static const char* const V[] = {
@@ -1252,6 +1362,9 @@ inline string NpcLastwordSpeech(const string& roleZh, const string& name)
         "最后说一句：我是{role}，{name}最可疑。",
         "我是{role}。如果{name}还活着，请一定盯住他。",
         "{role}遗言：{name}有狼面，下一轮把他出了。",
+        "我这{role}走得冤，但临死前咬一口：{name}不对劲。",
+        "大家好，我是{role}，我点的狼是{name}，票型见。",
+        "说最后一句，{role}立场：{name}的问题最大，拜托各位了。",
     };
     static const char* const GV[] = {
         "我是{role}，各位保重，好人加油。",
@@ -1259,11 +1372,12 @@ inline string NpcLastwordSpeech(const string& roleZh, const string& name)
         "我是{role}，没来得及抓到狼，靠大家了。",
         "我是{role}，祝好人阵营顺利。",
         "{role}走了，大家一定小心。",
+        "{role}退场，信息带不走，建议从发言节奏里找狼。",
     };
 
-    if (name.empty()) return NpcFill(GV[NpcRandInt(0, 4)], "", "", "", roleZh);
+    if (name.empty()) return NpcFill(GV[NpcRandInt(0, 5)], "", "", "", roleZh);
 
-    return NpcFill(V[NpcRandInt(0, 4)], "", name, "", roleZh);
+    return NpcFill(V[NpcRandInt(0, 7)], "", name, "", roleZh);
 }
 
 // 随机点一个存活目标当"怀疑对象"：无证据时表水/遗言不能永远不点名，
@@ -1310,6 +1424,23 @@ inline string NpcNightCheck(const NpcContext& ctx, const vector<string>& lines, 
 
     if (!pick.empty())
     {
+        // 分析基础上注入随机性（12% 放弃线索直接随机验未验者），
+        // 否则线索明确时预言家行为完全可预测，显得像程序跑流程
+        vector<int> pool;
+
+        for (size_t i = 0; i < ctx.targets.size(); ++i)
+        {
+            if (ctx.targets[i] != self && !NpcContains(checked, ctx.targets[i]))
+            {
+                pool.push_back(ctx.targets[i]);
+            }
+        }
+
+        if (!pool.empty() && NpcRandChance(12))
+        {
+            return "NIGHT_CHECK|" + to_string(pool[NpcRandInt(0, (int)pool.size() - 1)]);
+        }
+
         return "NIGHT_CHECK|" + to_string(pick[NpcRandInt(0, (int)pick.size() - 1)]);
     }
 
@@ -1332,6 +1463,20 @@ inline string NpcNightCheck(const NpcContext& ctx, const vector<string>& lines, 
     }
 
     if (pick.empty()) return "NONE";
+
+    // 分析基础上注入一点随机性：12% 概率无视怀疑名单随机挑一个没验过的，
+    // 让验人路径不完全可预测（否则线索齐了就变成死板的公式流程）
+    vector<int> pool;
+
+    for (size_t i = 0; i < ctx.targets.size(); ++i)
+    {
+        if (ctx.targets[i] != self && !NpcContains(checked, ctx.targets[i]))
+        {
+            pool.push_back(ctx.targets[i]);
+        }
+    }
+
+    if (!pool.empty() && NpcRandChance(12)) return "NIGHT_CHECK|" + to_string(pool[NpcRandInt(0, (int)pool.size() - 1)]);
 
     return "NIGHT_CHECK|" + to_string(pick[NpcRandInt(0, (int)pick.size() - 1)]);
 }
@@ -1362,6 +1507,13 @@ inline string NpcNightKill(const NpcContext& ctx, const vector<string>& lines, i
 
         if (!valid.empty())
         {
+            // 分析基础上注入随机性：12% 无视身份线索直接随机刀，狼的刀法
+            // 不完全按线索走，好人反推"刀路"时才不会一把锁死公式
+            if (!NpcRandChance(88) && !ctx.targets.empty())
+            {
+                return "NIGHT_KILL|" + to_string(ctx.targets[NpcRandInt(0, (int)ctx.targets.size() - 1)]);
+            }
+
             return "NIGHT_KILL|" + to_string(valid[NpcRandInt(0, (int)valid.size() - 1)]);
         }
     }
@@ -1490,6 +1642,9 @@ inline string NpcHunterShot(const NpcContext& ctx, const vector<string>& lines, 
 
     if (!valid.empty())
     {
+        // 查杀明确但不必然开枪（15% 放弃，按兵不动也是狼人杀的常态）
+        if (NpcRandChance(15)) return "NIGHT_SHOOT|-1";
+
         return "NIGHT_SHOOT|" + to_string(valid[NpcRandInt(0, (int)valid.size() - 1)]);
     }
 
@@ -1514,12 +1669,23 @@ inline string NpcDayVote(const NpcContext& ctx, const vector<string>& lines, int
     return "VOTE|" + to_string(NpcWeightedPick(w));
 }
 
-// 白天发言：被 @ 优先回应（自由讨论的接话机制）；预言家有验人记录就报验人
-// （优先报验出的狼，否则报最近一次）；有查杀证据直接投票宣言；都没有就
-// 权重随机点名怀疑对象（含 base 2 必有候选），首日套首日模板，可带话题词
+// 白天发言：被 @ 优先回应（自由讨论的接话机制，回应可嵌入对方话题词）；
+// 未被 @ 但有人直接提了自己的名字 → 被提及回应（讨论智能性：名字出现
+// 就是最强相关性）；预言家有验人记录就报验人（优先报验出的狼，否则报
+// 最近一次）；有查杀证据直接投票宣言；都没有就权重随机点名怀疑对象
+// （含 base 2 必有候选），首日套首日模板，可带话题词
 inline string NpcDaySpeech(const NpcContext& ctx, const vector<string>& lines, int self)
 {
-    if (!ctx.atTarget.empty()) return "SPEECH|" + NpcAtReply();
+    if (!ctx.atTarget.empty()) return "SPEECH|" + NpcAtReply(ctx.atTarget);
+
+    // 未被 @ 但聊天里直接提到自己的名字：同样接话（发言里嵌发起者名字）
+    string selfName = NpcPlayerName(ctx, self);
+
+    if (!ctx.lastChat.empty() && selfName.size() >= 2 &&
+        ctx.lastChat.find(selfName) != string::npos)
+    {
+        return "SPEECH|" + NpcMentionedReply(NpcLastSpeaker(ctx.lastChat));
+    }
 
     if (NpcRole(ctx) == "seer")
     {
@@ -1574,6 +1740,84 @@ inline string NpcLastword(const NpcContext& ctx, const vector<string>& lines, in
 
     return "SPEECH|" + NpcLastwordSpeech(NpcRoleZh(NpcRole(ctx)), nm);
 }
+
+// ============ 房内对话（Start 房间管理器用；离线模板 + 在线 AI） ============
+// 房内 NPC 没有游戏上下文，只有「房间内聊天记录 + 是否被 @」两类输入。
+// 离线回复 = 模板随机（可嵌入对方话题词，让回复像真的在接话）；
+// 在线回复 = 调大模型生成（失败回退离线模板，链路与游戏内一致）
+
+// 房内离线回复生成：atHit=true 必答（8 变体，嵌词）；false = 普通接话
+// （8 变体：点名型/闲聊型，嵌入发送者名字或内容词，营造在场感）
+inline string NpcRoomReplyOffline(const string& npcName, const string& senderName,
+                                  const string& content, bool atHit)
+{
+    static const char* const AV[] = {
+        "嗯？@我什么事",
+        "我觉得{x}有道理，细讲讲？",
+        "我先看看局势再说",
+        "你这么说的话，{x}确实值得注意",
+        "收到，我记下了",
+        "说到{x}我就有兴趣了，展开说说？",
+        "@我看什么，直接说重点嘛",
+        "这个点我再琢磨琢磨，晚点回你",
+    };
+    static const char* const NV[] = {
+        "你们聊，我搭个话，{x}这个话题我有印象。",
+        "房间有点安静，我来凑个热闹：{x}怎么说？",
+        "说到{x}，我倒想听听大家的看法。",
+        "光听不说多没意思，我支持{x}的讨论。",
+        "先插一嘴：{x}这事有后续了记得喊我。",
+        "我在这边听着呢，{x}展开讲讲？",
+    };
+    static const char* const GV[] = {
+        "哈哈，房间里的气氛不错，我围观一下。",
+        "来晚了来晚了，大家聊到哪了？",
+        "我先冒个泡，你们继续。",
+        "这话题我能接，不过想再听几句再表态。",
+        "路过围观，不用管我，你们聊你们的。",
+    };
+
+    string w = NpcPickWord(content);
+
+    if (atHit)
+    {
+        if (w.empty()) return AV[0 + NpcRandInt(0, 4)];
+
+        return NpcReplacePh(AV[NpcRandInt(0, 7)], "{x}", w);
+    }
+
+    if (!senderName.empty() && NpcRandChance(40))
+    {
+        return NpcReplacePh(NV[NpcRandInt(0, 5)], "{x}", senderName);
+    }
+
+    if (!w.empty() && NpcRandChance(40))
+    {
+        return NpcReplacePh(NV[NpcRandInt(0, 5)], "{x}", w);
+    }
+
+    return GV[NpcRandInt(0, 4)];
+}
+
+// 在线对话调用结果：ok=拿到回复文本；text=发言（已限长净化）
+struct NpcChatResult
+{
+    bool ok;
+    string text;
+};
+
+// 从模型响应提取纯发言文本：与 NpcExtractAction 同套路但容错更宽——
+// 房内对话模型可能直接回 JSON（{"reply":"..."}）也可能回裸文本；
+// 有 "content"/"reply" 键解转义取值，否则整段当文本，限长 80 字节。
+// 依赖 NpcJsonReadString（定义在更后位置），实现放文件末尾
+inline string NpcExtractText(const string& resp);
+
+// 房内在线对话：同步 POST 一次大模型（超时/重试取环境变量注入值），
+// 成功返回 ok=true + 文本；任何失败返回空结果（调用方回退离线模板）。
+// 阻塞时长上限 = (重试次数+1)×超时+退避，Start 侧必须放独立线程调用
+//（NpcHttpOnce 定义在本文件较后位置，本函数也因此放在其后，见后文）
+inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& senderName,
+                                       const string& content, bool atHit);
 
 // 离线决策总入口：按阶段分派。返回动作行或 NONE；
 // 未识别阶段返回 NONE（防御 Server 未来新增阶段）
@@ -1854,6 +2098,14 @@ inline NpcHttpResult NpcHttpOnce(const string& url, const string& reqHeaders,
     return r;
 }
 
+// 房内在线对话：同步 POST 一次大模型（超时/重试取环境变量注入值），
+// 成功返回 ok=true + 文本；任何失败返回空结果（调用方回退离线模板）。
+// 阻塞时长上限 = (重试次数+1)×超时+退避，Start 侧必须放独立线程调用。
+// 声明在前段（NpcRoomReplyOffline 附近），定义在文件末尾（依赖的
+// NpcHttpOnce/NpcResolveKey/NpcExtractText 全部就绪之后）
+inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& senderName,
+                                       const string& content, bool atHit);
+
 // 系统提示词：讲清身份、规则、动作行格式与约束（只输出一行 JSON、
 // 只能选可选目标）。规则写不完整模型就会乱编动作，这是在线决策的上限所在
 inline string NpcBuildSystemPrompt(const NpcContext& ctx)
@@ -2074,6 +2326,116 @@ inline string NpcOnlineDecide(const NpcContext& ctx)
     }
 
     return "";
+}
+
+// 房内在线对话实现（前段只有声明）：同步 POST 一次大模型，成功取 AI 文本，
+// 任何失败返回空结果由调用方回退离线模板。Start 侧调用必须在独立线程
+inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& senderName,
+                                       const string& content, bool atHit)
+{
+    NpcChatResult r;
+
+    r.ok = false;
+
+    string url = NpcEnvOr("WOLF_NPC_API_URL",
+                          "https://open.bigmodel.cn/api/paas/v4/chat/completions");
+    string key = NpcResolveKey();
+
+    if (key.empty()) return r;
+
+    int timeoutSec = NpcEnvInt("WOLF_NPC_TIMEOUT_SECONDS", 10, 1, 60);
+    int retries = NpcEnvInt("WOLF_NPC_RETRIES", 0, 0, 5);
+
+    string sys = "你是房间里的狼人杀玩家" + npcName
+        + "。你正在游戏大厅的房间里和其他玩家闲聊，不需要暴露身份或战术，"
+        + "自然、口语化地回应一句或两句话即可，语气尽量有性格，不要复读对方的话。";
+
+    string usr = "说话人：" + senderName;
+
+    if (atHit) usr += "\n对方@了你：" + content;
+
+    else usr += "\n对方说：" + content;
+
+    usr += "\n请只回复你的发言文本本身，不要加任何解释或标签。";
+
+    string body = "{\"model\":\"glm-4.7-flash\",\"messages\":[{\"role\":\"system\",\"content\":\""
+        + NpcJsonEscape(sys) + "\"},{\"role\":\"user\",\"content\":\""
+        + NpcJsonEscape(usr) + "\"}],\"temperature\":0.9}";
+    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + key;
+
+    for (int attempt = 0; attempt <= retries; ++attempt)
+    {
+        if (attempt > 0) Sleep((attempt == 1 ? 2 : 4) * 1000);
+
+        NpcHttpResult hr = NpcHttpOnce(url, headers, body, timeoutSec);
+
+        if (hr.ok)
+        {
+            string t = NpcExtractText(hr.body);
+
+            if (!t.empty())
+            {
+                r.ok = true;
+                r.text = t;
+            }
+
+            break;
+        }
+
+        if (!hr.retryable) break;
+    }
+
+    return r;
+}
+
+// 从模型响应提取纯发言文本（前段只有声明）：与 NpcExtractAction 同套路但
+// 容错更宽——房内对话模型可能直接回 JSON（{"reply":"..."}）也可能回裸
+// 文本；有 "content"/"reply" 键解转义取值，否则整段当文本，限长 80 字节
+inline string NpcExtractText(const string& resp)
+{
+    string inner;
+
+    size_t k = resp.find("\"content\"");
+
+    if (k == string::npos) k = resp.find("\"reply\"");
+
+    while (k != string::npos)
+    {
+        size_t colon = resp.find(':', k + 9);
+
+        if (colon != string::npos)
+        {
+            inner = NpcJsonReadString(resp, colon);
+
+            if (!inner.empty()) break;
+        }
+
+        k = resp.find("\"content\"", k + 9);
+
+        if (k == string::npos) k = resp.find("\"reply\"", k + 9);
+    }
+
+    if (inner.empty()) inner = resp;
+
+    while (!inner.empty() && (inner[0] == ' ' || inner[0] == '\t' || inner[0] == '\n' ||
+                              inner[0] == '\r' || inner[0] == '{' || inner[0] == '"'))
+    {
+        inner.erase(0, 1);
+    }
+
+    while (!inner.empty() && (inner[inner.size() - 1] == ' ' ||
+                              inner[inner.size() - 1] == '\n' ||
+                              inner[inner.size() - 1] == '\r' ||
+                              inner[inner.size() - 1] == '}' ||
+                              inner[inner.size() - 1] == '"' ||
+                              inner[inner.size() - 1] == '\\'))
+    {
+        inner.erase(inner.size() - 1);
+    }
+
+    if (inner.size() > 80) inner = inner.substr(0, 80);
+
+    return inner;
 }
 
 #endif // WOLF_NPC_BOT_H

@@ -502,6 +502,11 @@ try {
         }
         Pump-Bots $bots2
         foreach ($b in $bots2) {
+            if (-not $b.dead -and @($b.lines | Where-Object {
+                $_ -match '你被放逐|你被狼人击杀|你被女巫毒杀|你被猎人开枪|你被带走|你被毒杀|你被击杀' 
+            }).Count -gt 0) {
+                $b.dead = $true
+            }
             while ($b.queue.Count -gt 0) {
                 $line = $b.queue.Dequeue()
                 Log-Line 'S2' $b.k $line
@@ -509,10 +514,23 @@ try {
                 if (-not $won -and $line -match '本局结束') { $won = $line }
                 if ($line -match '白天发言阶段') {
                     $dayCount++; $votedThisDay = $false
-                    # 白天窗口刚开即发 @Bob（Server 投票收集期处理任何聊天）：
-                    # 最早命中窗口，不依赖 NPC 讨论节拍推进（夜晚切换吞行不再致命）
+                    # 白天窗口刚开即发 @（Server 投票收集期处理任何聊天，最早
+                    # 命中窗口）；发送者与目标必须都存活——死者发的 PLAYER_k 行
+                    # 被 Server 丢弃、死者也收不到提醒（round12 实测：Alice 先
+                    # 死后横幅 @Bob 全部无声）
                     if (-not $atConfirm) {
-                        Send-DayChat $bots2[0] '@Bob 叫你表态'
+                        $alive = @($bots2 | Where-Object { -not $_.dead })
+                        if ($alive.Count -ge 2) {
+                            $tg = $alive[1]
+                            $tName = ''
+                            if ($tg.pl) {
+                                $tp = $tg.pl.Split('|')
+                                if ($tp.Length -gt ($tg.k + 1)) { $tName = $tp[[int]$tg.k + 1] }
+                            }
+                            if ($tName) {
+                                Send-DayChat $alive[0] ('@' + $tName + ' 叫你表态')
+                            }
+                        }
                     }
                     # 每个白天横幅无条件回拨 2（重跑讨论节拍也重置投票节拍），
                     # stDisc=7 卡死时下一白天才能继续主动投票
@@ -536,7 +554,8 @@ try {
             $cNpc = @($bots2[0].lines | Where-Object { $_ -like 'NpcOne：*' -or $_ -like 'NpcTwo：*' }).Count
             if ($cNpc -gt $npc1Base) {
                 $discussed = $true
-                Send-DayChat $bots2[1] '@NpcOne 你怎么看'
+                $alive2 = @($bots2 | Where-Object { -not $_.dead })
+                if ($alive2.Count -ge 1) { Send-DayChat $alive2[0] '@NpcOne 你怎么看' }
                 $npc1AfterChat = @($bots2[0].lines | Where-Object { $_ -like 'NpcOne：*' }).Count
                 $tStamp = [DateTime]::Now
                 $stDisc = 3
@@ -554,20 +573,27 @@ try {
                 $stDisc = 6
             }
         }
-        # @Bob 提醒/确认统计：横幅已发 @Bob，行到达后即命中（原 stDisc=4 内统计，
-        # 状态机简化后挂主循环每轮检查）
+        # @ 真人提醒/确认统计：横幅已发 @（发送者/目标取存活真人），行到达后即
+        # 命中（原 stDisc=4 内统计，状态机简化后挂主循环每轮检查）；排除
+        # @NpcOne 的『你at了NpcOne』误判——确认行目标必须是真人名
         if (-not $atNotify) {
-            $atNotify = [bool](@($bots2[1].lines -match 'Alice at了你：叫你表态').Count -gt 0)
+            $atNotify = [bool](@($bots2 | ForEach-Object { $_.lines } | Where-Object {
+                $_ -match 'at了你：叫你表态' }).Count -gt 0)
         }
         if (-not $atConfirm) {
-            $atConfirm = [bool](@($bots2[0].lines -match '你at了Bob').Count -gt 0)
+            $atConfirm = [bool](@($bots2 | ForEach-Object { $_.lines } | Where-Object {
+                $_ -match '你at了(?!Npc)' }).Count -gt 0)
         }
         # @不存在 测试不再挂状态机：atConfirm 命中后任意时刻发送（白天窗口内
-        # Server 必处理且秒回；夜晚发送被吞也无提醒行，两种情形均符合断言）
+        # Server 必处理且秒回；夜晚发送被吞也无提醒行，两种情形均符合断言）；
+        # 发送者必须存活（死者行被 Server 丢弃）
         if (-not $badSent -and $atConfirm) {
-            Send-DayChat $bots2[0] '@不存在X 针对空气'
-            $badSent = $true
-            $badStamp = [DateTime]::Now
+            $alive3 = @($bots2 | Where-Object { -not $_.dead })
+            if ($alive3.Count -ge 1) {
+                Send-DayChat $alive3[0] '@不存在X 针对空气'
+                $badSent = $true
+                $badStamp = [DateTime]::Now
+            }
         }
         if ($badSent -and -not $badChecked -and (([DateTime]::Now - $badStamp).TotalSeconds -ge 1.5)) {
             $badLines = 0
@@ -710,7 +736,9 @@ try {
         Start-Sleep -Milliseconds 50
     }
     Check 'S3-1 在线 NPC 白天决策前全员收到等待提示（AI 分析中）' $waitHinted
-    Stop-Process -Name 'npc_fake_server' -Force -ErrorAction SilentlyContinue
+    # fake server 进程名是 powershell.exe，按进程名杀不到；按 18080 端口占用
+    # 精确清理（与 Kill-All 同款），确保下一轮跑前端口已释放避免抢端口失败
+    try { Get-NetTCPConnection -LocalPort 18080 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue } } catch { }
     Start-Sleep -Seconds 1
     $fakeOut = ''
     if (Test-Path "$wolf\fake_out.txt") {

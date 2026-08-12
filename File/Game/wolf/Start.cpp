@@ -317,6 +317,11 @@ struct Room
     vector<PlayerLog> logs;         // 进出记录（LG 查询；随房间销毁）
     vector<LocalUserRec> localUsers; // 本地用户（ADD USER，§19.6；随房间销毁）
     vector<string> muteList;        // 禁言名单（§20.4：名字项与通配模式项；随房间销毁）
+    deque<string> roomChat;         // 房内最近聊天（含 NPC 发言，限 20 条；NPC 相关性接话
+                                    // 判断的上下文，随房间生命周期自然清除，§22）
+    map<string, ULONGLONG> npcChatTs; // NPC 名→上次普通接话 tick（防刷屏，普通接话 2s 间隔）
+    mutable mutex chatMutex;        // 保护 roomChat/npcChatTs：在线 NPC 回复线程与连接线程
+                                    // 并发访问的细粒度锁（锁序: 房间锁→chatMutex，无反向）
 
     Room()
         : playerCount(0), gameStarted(false), gameEnded(false),
@@ -865,51 +870,160 @@ int ParseAtTarget(Room* room, const string& chat, int selfSlot)
     return hit;
 }
 
-// 局外 @ 命中 NPC 时 Start 侧代答（NPC 无大厅连接收不到私发提醒，§21）：
-// 随机模板（3-5 种）里取一个词从被 at 内容里凑；回复用 INVALID_SOCKET
-// 全员广播——普通聊天广播排除发送者，但"对方回你话要让你看见"，故 NPC
-// 回复的排除不能带原发送者（NPC 本身无 socket，也只能这么发）
-void NpcRoomAtReply(Room* room, const string& npcName, const string& content)
+// 房内 NPC 发言工具（§22）：NPC 无大厅连接，回复一律 INVALID_SOCKET 全员
+// 广播——普通聊天广播排除发送者，但"对方回你话要让你看见"，故 NPC 回复
+// 的排除不能带原发送者。全部发言（含在线线程的 AI 回复）都进 roomChat，
+// 作为后续相关性判断的上下文；roomChat/npcChatTs 用 chatMutex 保护
+//（在线回复线程与连接线程并发访问），锁序永远 房间锁→chatMutex
+void NpcRoomBroadcast(Room* room, const string& npcName, const string& text, ULONGLONG nowTs)
 {
-    static const char* tmpls[] = {
-        "嗯？@我什么事",
-        "我觉得{x}有道理",
-        "我先看看局势再说",
-        "你这么说的话，{x}确实值得注意",
-        "收到，我记下了",
+    string sanitized = SanitizeChat(text);
+
+    if (sanitized.empty()) return;
+
+    RoomMsg(room, npcName + "：" + sanitized, INVALID_SOCKET);
+
+    lock_guard<mutex> lk(room->chatMutex);
+
+    room->roomChat.push_back(npcName + "：" + sanitized);
+
+    if ((int)room->roomChat.size() > 20) room->roomChat.pop_front();
+
+    room->npcChatTs[npcName] = nowTs;
+}
+
+// NPC 名→上次接话 tick（普通接话 2s 间隔防刷屏；@ 必答不受限）
+ULONGLONG NpcRoomLastTs(Room* room, const string& npcName)
+{
+    lock_guard<mutex> lk(room->chatMutex);
+
+    auto it = room->npcChatTs.find(npcName);
+
+    if (it == room->npcChatTs.end()) return 0;
+
+    return it->second;
+}
+
+// 在线 NPC 回复线程：HTTP 同步调用（超时=环境变量注入值）在独立线程跑，
+// 避免卡住 Start 的 select 主循环；成功用 AI 文本、失败回退离线模板——
+// @ 必答语义在任何模式下都必须有回复。广播前须查房间是否还活着
+void NpcRoomOnlineReplyThread(const string& roomId, const string& npcName,
+                              const string& senderName, const string& content,
+                              bool atHit)
+{
+    NpcChatResult r = NpcOnlineRoomChat(npcName, senderName, content, atHit);
+
+    string text = r.ok ? r.text : NpcRoomReplyOffline(npcName, senderName, content, atHit);
+
+    lock_guard<mutex> lk(g_roomsMutex);
+
+    auto it = g_rooms.find(roomId);
+
+    if (it == g_rooms.end()) return;
+
+    Room* room = it->second.get();
+
+    NpcRoomBroadcast(room, npcName, text, GetTickCount64());
+}
+
+// 房内 NPC 发言入口（§22）：atHit=true（被 @）必定回复；false 按相关性
+// 判定是否接话——名字出现是最高相关性（85%），游戏话题词次之（30%），
+// 纯闲聊仅 6%，外加普通接话 2s 频率上限与"上一条还是自己在说"的防自接
+// 话判断。在线 NPC 异步走线程，离线 NPC 同步生成（毫秒级不阻塞）
+void NpcRoomSpeak(Room* room, const string& npcName, bool npcOnline,
+                  const string& senderName, const string& content, bool atHit)
+{
+    if (!room) return;
+
+    if (!atHit)
+    {
+        ULONGLONG nowTs = GetTickCount64();
+
+        lock_guard<mutex> lk(room->chatMutex);
+
+        auto it = room->npcChatTs.find(npcName);
+
+        if (it != room->npcChatTs.end() && nowTs - it->second < 2000) return;
+
+        // 防自接话：最近一条房内聊天还是自己说的 → 跳过（否则真人沉默时
+        // NPC 会自己跟自己聊起来，气氛诡异）
+        if (!room->roomChat.empty() &&
+            room->roomChat.back().compare(0, npcName.size() + 1, npcName + "：") == 0)
+        {
+            return;
+        }
+    }
+
+    if (npcOnline)
+    {
+        thread(NpcRoomOnlineReplyThread, room->roomId, npcName, senderName, content, atHit).detach();
+        return;
+    }
+
+    string text = NpcRoomReplyOffline(npcName, senderName, content, atHit);
+
+    NpcRoomBroadcast(room, npcName, text, GetTickCount64());
+}
+
+// 房内相关性判定（§22）：返回是否"接话"。nameHit=聊天里出现 NPC 自己
+// 名字；topicHit=命中游戏话题词表；两者都无 → 纯闲聊低概率
+bool NpcRoomRelevant(Room* room, int npcSlot, const string& chat, bool& nameHit, bool& topicHit)
+{
+    nameHit = false;
+    topicHit = false;
+
+    const string& nm = room->slots[npcSlot].name;
+
+    if (!nm.empty() && chat.find(nm) != string::npos) nameHit = true;
+
+    static const char* topics[] = {
+        "狼人", "预言家", "女巫", "守卫", "猎人", "投票", "放逐",
+        "验人", "查杀", "刀", "票", "身份", "晚上", "白天", "开局", "阵营",
     };
 
-    size_t count = sizeof(tmpls) / sizeof(tmpls[0]);
-
-    // 从内容里取第一个词（空白/中英文标点分隔，限长防模板被撑爆）
-    string word;
-
-    for (char c : content)
+    for (size_t i = 0; i < sizeof(topics) / sizeof(topics[0]); ++i)
     {
-        if (c == ' ' || c == '、' || c == '，' || c == ',' || c == '。' || c == '.' ||
-            c == '！' || c == '!' || c == '？' || c == '?')
+        if (chat.find(topics[i]) != string::npos)
         {
-            if (!word.empty()) break;
+            topicHit = true;
+            break;
+        }
+    }
+
+    if (nameHit) return NpcRandChance(85);
+
+    if (topicHit) return NpcRandChance(30);
+
+    return NpcRandChance(6);
+}
+
+// 房内聊天入口：普通聊天广播已经发出（调用方 RoomMsg 之后），这里让每个
+// NPC 按相关性决定是否接话。atSlot 是 @ 命中槽下标（-1=未命中 @）；
+// at 命中 NPC 槽 → 该 NPC 必答、其余 NPC 按普通相关性
+void NpcRoomMaybeChat(Room* room, const string& senderName, const string& chat, int atSlot)
+{
+    if (!room) return;
+
+    for (int i = 0; i < MAX_PLAYERS; ++i)
+    {
+        if (!room->slots[i].isNpc) continue;
+
+        if (i == atSlot)
+        {
+            NpcRoomSpeak(room, room->slots[i].name, room->slots[i].npcOnline,
+                         senderName, chat, true);
             continue;
         }
 
-        word += c;
+        bool nameHit = false;
+        bool topicHit = false;
 
-        if (word.size() >= 16) break;
+        if (NpcRoomRelevant(room, i, chat, nameHit, topicHit))
+        {
+            NpcRoomSpeak(room, room->slots[i].name, room->slots[i].npcOnline,
+                         senderName, chat, false);
+        }
     }
-
-    if (word.empty()) word = "你们";
-
-    string reply = tmpls[rand() % count];
-
-    size_t x = reply.find("{x}");
-
-    if (x != string::npos)
-    {
-        reply.replace(x, 3, word);
-    }
-
-    RoomMsg(room, npcName + "：" + reply, INVALID_SOCKET);
 }
 
 // ============ 重名检查 ============
@@ -2458,16 +2572,26 @@ void HandleCommand(SOCKET sock, const string& line)
 
         RoomMsg(room, ci.name + "：" + chat, sock);
 
+        // 房内聊天进 NPC 接话上下文（限 20 条，§22），NPC 按相关性接话；
+        // chatMutex 保护与在线 NPC 回复线程的并发写
+        {
+            lock_guard<mutex> lk(room->chatMutex);
+            room->roomChat.push_back(ci.name + "：" + chat);
+
+            if ((int)room->roomChat.size() > 20) room->roomChat.pop_front();
+        }
+
         if (atSlot >= 0)
         {
             string content = chat.substr(chat.find(' ') + 1);
             string targetName = room->slots[atSlot].name;
             Slot& tg = room->slots[atSlot];
 
-            // NPC 无大厅连接：私发提醒无处可送，代它回一条（全员可见）
+            // NPC 无大厅连接：私发提醒无处可送，代它回一条（全员可见）；
+            // 在线 NPC 走 AI 线程、失败回退离线模板，必定回复（§22）
             if (tg.isNpc)
             {
-                NpcRoomAtReply(room, targetName, content);
+                NpcRoomSpeak(room, targetName, tg.npcOnline, ci.name, content, true);
             }
 
             // 目标有连接（真人/本地用户窗口）才私发提醒；游戏期断开的槽
@@ -2480,7 +2604,15 @@ void HandleCommand(SOCKET sock, const string& line)
             }
 
             SendToClientL10n(sock, "ROOM_MSG|", "你at了 %s", "You @-ed %s", targetName.c_str());
+
+            // @ 命中真人：其他 NPC 按普通聊天相关性决定是否搭话
+            NpcRoomMaybeChat(room, ci.name, chat, atSlot);
+
+            return;
         }
+
+        // 普通聊天：所有 NPC 按相关性决定是否接话（§22）
+        NpcRoomMaybeChat(room, ci.name, chat, -1);
     }
         else
         {
