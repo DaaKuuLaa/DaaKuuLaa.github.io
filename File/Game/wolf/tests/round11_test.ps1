@@ -27,7 +27,17 @@ function Kill-All {
     Stop-Process -Name 'Start' -Force -ErrorAction SilentlyContinue
     Stop-Process -Name 'Server' -Force -ErrorAction SilentlyContinue
     Stop-Process -Name 'Client' -Force -ErrorAction SilentlyContinue
-    # fake server 进程名是 powershell.exe 杀不到，按 18080 端口占用精确清理
+    # fake server 进程名是 powershell.exe 杀不到，按 PID 文件精确清理；
+    # Get-NetTCPConnection 对 Loopback 监听不可靠（可能查不到），PID 文件更稳
+    $fpid = "$wolf\npc_fake_server.pid"
+    if (Test-Path $fpid) {
+        try {
+            $fp = [int]([IO.File]::ReadAllText($fpid).Trim())
+            Stop-Process -Id $fp -Force -ErrorAction SilentlyContinue
+        } catch { }
+        Remove-Item $fpid -ErrorAction SilentlyContinue
+    }
+    Remove-Item "$wolf\fake_server_log.txt" -ErrorAction SilentlyContinue
     try {
         Get-NetTCPConnection -LocalPort 18080 -ErrorAction SilentlyContinue |
             ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
@@ -684,12 +694,26 @@ try {
     # ============ S3：API（在线 NPC：等待提示/请求/文件 key/超时回退） ============
     Kill-All
     Remove-Item "$wolf\fake_out.txt" -ErrorAction SilentlyContinue
+    Remove-Item "$wolf\fake_server_log.txt" -ErrorAction SilentlyContinue
     Remove-Item "$wolf\npc_key.bin" -ErrorAction SilentlyContinue
     $env:WOLF_VOTE_TIMEOUT_SECONDS = '6'
     $env:WOLF_NPC_API_KEY = 'testkey-12345'
     $env:WOLF_NPC_API_URL = 'http://127.0.0.1:18080/chat'
     $env:WOLF_NPC_TIMEOUT_SECONDS = '3'
     $fake = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$wolf\tests\npc_fake_server.ps1") -WindowStyle Hidden -PassThru -RedirectStandardOutput "$wolf\fake_out.txt"
+    # fake server 在本机 PowerShell 子进程冷启动约 15 秒才就绪，Start-RM
+    # 前必须等它监听上（round12 R5 同类坑），否则白天决策连不上回退离线
+    $fsReady = $false
+    $fsDeadline = [DateTime]::Now.AddSeconds(25)
+    while ([DateTime]::Now -lt $fsDeadline -and -not $fsReady) {
+        try {
+            $tc = New-Object Net.Sockets.TcpClient
+            $tc.Connect('127.0.0.1', 18080)
+            $tc.Close()
+            $fsReady = $true
+        } catch { Start-Sleep -Milliseconds 400 }
+    }
+    if (-not $fsReady) { Write-Output 'WARN fake server 18080 未就绪' }
     $null = Start-RM 8888
     $S3 = New-Room4
     SendLine $S3.room[0] 'ADD NPC NpcOn on'
@@ -699,8 +723,10 @@ try {
     Config-Room4 $S3
     $g3 = Start-Game4 $S3
     $bots3 = $g3.bots
-    $script:witchSave = $false
-    $script:witchPoison = $true
+    # S3 段狼 bot 固定杀槽2、女巫 bot 若毒杀会在首夜与狼杀叠加屠神
+    # （2 神全灭）→ 游戏在白天 1 前结束、「AI 分析中」永不出现。关掉毒杀
+    # 保证首夜只死 1 人、白天 1 必到，在线决策请求才有着落
+    $script:witchPoison = $false
     $script:wolfTarget = 2
     $script:seerTarget = 1
     $waitHinted = $false
@@ -756,7 +782,14 @@ try {
             }
         } catch { }
     }
-    Check 'S3-2 在线 NPC 决策请求已发出（fake server 收到 REQ）' ($fakeOut.Contains('REQ:'))
+    # fake server 的 stdout 重定向是块缓冲，进程活着时 REQ 不落盘（round12
+    # R5-2 同类坑）；fake server 现在另写 fake_server_log.txt（AppendAllText
+    # 立即落盘），两处任一读到 REQ 即断言成功
+    $fakeLogOut = ''
+    if (Test-Path "$wolf\fake_server_log.txt") {
+        try { $fakeLogOut = [IO.File]::ReadAllText("$wolf\fake_server_log.txt", [Text.Encoding]::UTF8) } catch { }
+    }
+    Check 'S3-2 在线 NPC 决策请求已发出（fake server 收到 REQ）' ($fakeOut.Contains('REQ:') -or $fakeLogOut.Contains('REQ:'))
     $keyFile = Test-Path "$wolf\npc_key.bin"
     Check 'S3-3 API key 已持久化到 npc_key.bin' $keyFile
     $keyDbg = ''

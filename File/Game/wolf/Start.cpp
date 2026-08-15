@@ -892,18 +892,6 @@ void NpcRoomBroadcast(Room* room, const string& npcName, const string& text, ULO
     room->npcChatTs[npcName] = nowTs;
 }
 
-// NPC 名→上次接话 tick（普通接话 2s 间隔防刷屏；@ 必答不受限）
-ULONGLONG NpcRoomLastTs(Room* room, const string& npcName)
-{
-    lock_guard<mutex> lk(room->chatMutex);
-
-    auto it = room->npcChatTs.find(npcName);
-
-    if (it == room->npcChatTs.end()) return 0;
-
-    return it->second;
-}
-
 // 在线 NPC 回复线程：HTTP 同步调用（超时=环境变量注入值）在独立线程跑，
 // 避免卡住 Start 的 select 主循环；成功用 AI 文本、失败回退离线模板——
 // @ 必答语义在任何模式下都必须有回复。广播前须查房间是否还活着
@@ -911,7 +899,13 @@ void NpcRoomOnlineReplyThread(const string& roomId, const string& npcName,
                               const string& senderName, const string& content,
                               bool atHit)
 {
+    Log("NPC-ONLINE-REQ npc=" + npcName + " sender=" + senderName
+        + " url=" + NpcEnvOr("WOLF_NPC_API_URL", "(none)")
+        + " key=" + (NpcResolveKey().empty() ? "(empty)" : "(set)"));
+
     NpcChatResult r = NpcOnlineRoomChat(npcName, senderName, content, atHit);
+
+    Log(string("NPC-ONLINE-RES ok=") + (r.ok ? "1" : "0") + " text=" + r.text);
 
     string text = r.ok ? r.text : NpcRoomReplyOffline(npcName, senderName, content, atHit);
 
@@ -1008,12 +1002,11 @@ void NpcRoomMaybeChat(Room* room, const string& senderName, const string& chat, 
     {
         if (!room->slots[i].isNpc) continue;
 
-        if (i == atSlot)
-        {
-            NpcRoomSpeak(room, room->slots[i].name, room->slots[i].npcOnline,
-                         senderName, chat, true);
-            continue;
-        }
+        // 调用方 if(atSlot>=0) 块里 2592 行 NpcRoomSpeak(atHit=true) 已对被 @
+        // 命中的 NPC 走必答分支；此循环只负责让"其他" NPC 按相关性决定是否
+        // 接话，跳过 atSlot 不再触发第二次必答（否则 @Npc 同一条消息会被发
+        // 两遍，AI 路径下还会打两次 HTTP）
+        if (i == atSlot) continue;
 
         bool nameHit = false;
         bool topicHit = false;

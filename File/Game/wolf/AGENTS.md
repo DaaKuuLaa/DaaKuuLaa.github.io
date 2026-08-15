@@ -2,7 +2,7 @@
 
 联网控制台版狼人杀 C++ 项目。源码：`Start.cpp`（房间管理器）/ `Server.cpp`（单局服务器）/ `Client.cpp`（客户端）/ `common.h`（共享协议与职业表），测试脚本在 `tests/`。狼人杀复用了 `reference/demon/`（恶魔轮盘，已完成的参考项目）已验证的架构、协议思路和所有已修复的坑。
 
-> 当前状态：**第十轮客户端部分完成**：SHOW/LOOK/ADD 三场景分发（房间内原文转发 Start / 大厅用法说明 / 游戏内本地提示，不再落 GameOnly 兜底）、MUTE/UNMUTE（common.h 命令表 + 房间内转发 + HELP 条目）、START /F 参数原样转发（不再丢弃）、游戏中继（§20.7：WOLF_FORCE_PROXY=1 强制中继，直连 5 次失败回退 Start 中继；PROXY_GAME/PROXY_OK/PROXY_FAIL、GAME_FWD 双向转发、GAME_FWD|PING 心跳、断线/重连直连→中继、__GAME_OVER__ 收尾同直连），Client.exe 与 Client_en.exe 编译通过，server_test/round9_test 回归全 PASS。**第十轮验收脚本 tests/round10_test.ps1 已完成并 23 项全 PASS**（A 女巫救/毒流程与屠边、B 丘比特/盗贼情报保密、D 房内 MUTE/UNMUTE/SHOW/通配化简、E 游戏内禁言传递：白天发言驳回+投票仍可用）。Start/Server 侧改动由另一代理负责，未随本提交。第九轮（round9_test.ps1 47 项全 PASS）及其之前均已实现并通过 tests/ 脚本。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
+> 当前状态：**第十一、十二轮验收完成**。第十一轮（round11_test.ps1 37 项全 PASS）：在线 NPC 游戏内决策走 HTTP（WOLF_NPC_API_URL/KEY/TIMEOUT 环境变量、retries=1、key 落盘 npc_key.bin、超时回退离线）+ 房内 @/聊天；第十二轮（round12_test.ps1 17 项全 PASS）：离线 NPC 房内聊天（@ 必答恰一条、相关性接话 名字 85%/话题词 30%/纯闲聊 6%、2s 限频、多话题词嵌入、极端输入不崩）+ 在线 NPC 房内对话（fake_chat HTTP 响应「AI房内回话」广播、无 key 回退离线模板、超时快速兜底）。**本轮修复**：NpcExtractText 对 8 字符 `"reply"` 键的 k+9 偏移错位导致 AI 文本解析成整段兜底（改 `find(':', k)`）；NpcOnlineRoomChat 重试默认 0→1（本机 WinHTTP↔PowerShell TcpListener 环回偶发 EOF/12030，重试兜底）；fake server/chat 本机冷启动 ~15s 才就绪（脚本加 25s 就绪探针）；stdout 重定向块缓冲致 REQ 不落盘（改用 AppendAllText 日志 fake_server_log.txt/fake_chat_log.txt）；Get-NetTCPConnection 对 Loopback 监听不可靠（按 PID 文件 fake_chat.pid/npc_fake_server.pid 清理残留）；round11 S3 段女巫毒杀+狼杀首夜屠神导致无白天（关毒杀保证白天 1 必到）；R2-2 概率断言 5 试→10 试（0.7^5≈16.8% 偶发假 FAIL）。Start.cpp 探针日志（NPC-ONLINE-REQ/RES）与 NpcRoomMaybeChat 的 @ 必答不再重复触发，保留。第十轮及其之前均已实现并通过 tests/ 脚本。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
 
 ## 工作目录铁律（最重要）
 
@@ -60,7 +60,7 @@
 
 **游戏链路（真实协议）**：Start 开局时给每个已连接槽位分配 **gamePid=压缩名单序号 1..N**（槽位升序跳过未连接槽，Slot.gamePid 记录）并存入槽位；命令行按同序传 Server.exe，`GAME_PREPARE|port|roomId|ip|gamePid` 下发；客户端**直连游戏端口**并发 `PLAYER_ID|<gamePid>` 认领槽位（Server 的 playerId=名单位置 1..N，与 gamePid 一致——**槽位空洞时 GAME_PREPARE pid 必须用 gamePid 而非槽号+1**，否则张冠李戴）；开局广播 `PLAYER_LIST|<总数>|<名1>|...|<名N>`（名字=槽位序、含玩家总数头字段，Client 解析必须跳过头字段）。游戏内其他协议：`PING`（心跳保活行，Server 收到只刷新 lastSeen 并回一行 PING）、`GAME_ENDED|<roomId>`（Server 通知本局结束）、`RELEASE|<roomId>`（全部玩家失联时 Server 通知销毁房间、清空黑名单）、`__GAME_OVER__`（Server 收尾关连接前发的终态裸行，客户端据此判定「本局正常结束」直接回房、不进入重连流程）、`ROLE|<职业enName>`（身份私信）、`__DAY_OPEN__`/`__INPUT__`/`__CLS__`/`__PAUSE__` 等控制消息。`REJOIN|<roomId>|<playerId>` 的 playerId=开局分配的 gamePid：Start 按 `slots[i].gamePid == pid` 匹配回**原槽位**（含空洞局），匹配失败才回落空槽（不含槽 0）；房主保护 hostPid=1（槽 0 恒为名单首位）。兜底回滚（`WOLF_GAME_WAIT_SECONDS` 注入）只对「Server.exe 进程已死」生效——进程活着时房间保持 [游戏中]，善后交给 Server 自身 25s 开局超时 RELEASE。
 
-## 测试（tests/ 十一套自动化脚本，全部 PASS）
+## 测试（tests/ 十五套自动化脚本，全部 PASS）
 
 - `tests/proto_test.ps1` — **60 项**协议级验收：房主流程 / 转移房主 / PICK+禁入 / 职业配置 / 比例 / START / AUTO / BAN-UNBAN / IP 黑名单 / 名字规则 / GAME_ENDED+REJOIN 回房等。
 - `tests/server_test.ps1` — **5 项** 4 人直连局（1 狼 + 0 中立 + 2 神 + 村民开，完整昼夜循环走通）。
@@ -74,6 +74,10 @@
 - `tests/round7_test.ps1` — **10 项**第七轮验收（§17 实际落地内容：A 段直连 4 人局全员收到 `PLAYER_LIST|4|...` 广播且行内容一致（顺序=Server 传参顺序、含总数头字段、无职业信息）、B 段 Server 对 PING 回 PING 应答（半开死连检测基础）、C 段兜底不误杀存活 Server（WOLF_GAME_WAIT_SECONDS=2 注入 → 全员断大厅不连游戏服 4s 后 Server.exe 仍在+房间仍 [游戏中] → 4 人连游戏服触发真开局，中文名全链路进 PLAYER_LIST+PING 应答））。
 - `tests/round8_test.ps1` — **16 项**第八轮验收（§18：A 段 Start 无参数交互输入监听端口（stdin 喂 8890 生效；先喂非法 80 再喂 8891 的重输流程）与 Server 回连用实际端口；B 段紧凑 4 人局 PLIST 对齐（GAME_PREPARE pid=1,2,3,4 / 欢迎语槽位一致 / PLAYER_LIST 行 / 白天「玩家Alice 投票给了玩家Bob（槽2）」名字对齐 / VOTE·BOMB 非法目标原因+请重新输入）；C 段槽位空洞局（5 人房去 1 人）压缩名单序对齐（pid=1,2,3,4、PLAYER_LIST=AliceC|BobC|DaveC|EveC、DaveC=3 号位、白天 DaveC 投票广播）；D 段 PICK/TRANSFER 目标不存在「目标玩家不存在：<参数>（…），请重新输入」；E 段杀 Server 后兜底回滚、空洞局全员按 gamePid REJOIN 回原槽、STATUS 槽位对齐）。
 - `tests/round9_test.ps1` — **47 项**第九轮验收（§19：A 段本地用户 JOIN 分支空指针修复（A11 根因：room->localUsers 解引用）、B 段命令封装与输出（SHOW/LOOK 族、NPC 列表 'NPCs'、ADD USER/NPC、BAN 模式、LOOK 非法用法）；C 段槽位空洞局（GAME_PREPARE 压缩 pid、PICK/TRANSFER 非法目标、NPC 局全流程：在线 NPC 发言广播+自动投票+完整昼夜走到 __GAME_OVER__）；D 段本地用户窗口（ADD USER 拉起窗口进程、-u 指定控制者、重名拒绝、窗口自动入房 STATUS、SHOW ADD、Player 3/4 自动连游戏端口、PLAYER_LIST 含 LuUser 名）；E 段断线判活（3s 静默清连接、PING 保活 6s 不断）；F 段在线 NPC 发言与 API 调用（4 人局白天到达、假 HTTP 服务器收到 REQ）——**47 项全 PASS**）。
+
+- `tests/round10_test.ps1` — **23 项**第十轮验收（A 女巫救/毒流程与屠边、B 丘比特/盗贼情报保密、D 房内 MUTE/UNMUTE/SHOW/通配化简、E 游戏内禁言传递）。
+- `tests/round11_test.ps1` — **37 项**第十一轮验收（S1 ADD/UNADD NPC 与重名/越权/批量、S2 6 人局 NPC 全流程昼夜、S3 API：在线 NPC 白天决策「AI 分析中」等待提示 + fake server 收到 REQ + key 落盘 npc_key.bin + 无 env key 从文件恢复 + 超时回退离线、S4 @NPC 房内对话在线路径）。round11 修复：S3 段女巫毒杀关停保证白天必到、fake server 25s 就绪探针、fake_server_log.txt AppendAllText 落盘 + npc_fake_server.pid 按 PID 清理、R2-2 话题断言 5→10 试。
+- `tests/round12_test.ps1` — **17 项**第十二轮验收（R1 房内 @离线 NPC 必答：单次恰一条/多样性/词嵌入；R2 普通聊天相关性：名字 85% 6试/话题词 30% 10试/纯闲聊 6% 上限 5 次；R3 两人名接话；R4 极端输入：超长/纯标点/管道注入/@不存在/进程存活；R5 在线 NPC 房内 @：AI 文本广播 + fake_chat 收到 REQ（重试兜底）+ NpcExtractText 干净解析；R6 无 key 回退离线；R7 短超时快速兜底；R8 单次 @ 恰一条回复无重复发声）。
 
 运行方式（串行执行，输出文件仅作参考，以脚本 **exit code** 为准）：
 `powershell -NoProfile -ExecutionPolicy Bypass -File tests\xxx.ps1 *> tests\xxx_out.txt`

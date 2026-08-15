@@ -2344,7 +2344,7 @@ inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& send
     if (key.empty()) return r;
 
     int timeoutSec = NpcEnvInt("WOLF_NPC_TIMEOUT_SECONDS", 10, 1, 60);
-    int retries = NpcEnvInt("WOLF_NPC_RETRIES", 0, 0, 5);
+    int retries = NpcEnvInt("WOLF_NPC_RETRIES", 1, 0, 5);
 
     string sys = "你是房间里的狼人杀玩家" + npcName
         + "。你正在游戏大厅的房间里和其他玩家闲聊，不需要暴露身份或战术，"
@@ -2401,7 +2401,9 @@ inline string NpcExtractText(const string& resp)
 
     while (k != string::npos)
     {
-        size_t colon = resp.find(':', k + 9);
+        // 键名后紧跟冒号：从键名起点 find(':', k) 即可（content 9 字符、
+        // reply 8 字符，用 k+9 对 reply 会错位到值内部，解析不出结果）
+        size_t colon = resp.find(':', k);
 
         if (colon != string::npos)
         {
@@ -2410,9 +2412,9 @@ inline string NpcExtractText(const string& resp)
             if (!inner.empty()) break;
         }
 
-        k = resp.find("\"content\"", k + 9);
+        k = resp.find("\"content\"", k + 1);
 
-        if (k == string::npos) k = resp.find("\"reply\"", k + 9);
+        if (k == string::npos) k = resp.find("\"reply\"", k + 1);
     }
 
     if (inner.empty()) inner = resp;
