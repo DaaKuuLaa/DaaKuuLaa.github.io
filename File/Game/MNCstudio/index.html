@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MNCstudio - MonkeyNegroChessStudio</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(72, 56, 149, 0.3) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(255, 107, 107, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(72, 209, 204, 0.12) 0%, transparent 50%);
+            animation: bgFloat 20s ease-in-out infinite;
+            z-index: 0;
+        }
+
+        @keyframes bgFloat {
+            0%, 100% { transform: translate(0, 0) rotate(0deg); }
+            33% { transform: translate(2%, -2%) rotate(1deg); }
+            66% { transform: translate(-2%, 1%) rotate(-1deg); }
+        }
+
+        .floating-shapes {
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .shape {
+            position: absolute;
+            border-radius: 50%;
+            opacity: 0.15;
+        }
+
+        .shape:nth-child(1) {
+            width: 300px;
+            height: 300px;
+            background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+            top: 10%;
+            left: -5%;
+            animation: floatA 8s ease-in-out infinite;
+        }
+
+        .shape:nth-child(2) {
+            width: 200px;
+            height: 200px;
+            background: linear-gradient(135deg, #48dbfb, #0abde3);
+            bottom: 15%;
+            right: -3%;
+            animation: floatB 10s ease-in-out infinite;
+        }
+
+        .shape:nth-child(3) {
+            width: 150px;
+            height: 150px;
+            background: linear-gradient(135deg, #feca57, #ff9f43);
+            top: 50%;
+            left: 60%;
+            animation: floatA 12s ease-in-out infinite;
+        }
+
+        .shape:nth-child(4) {
+            width: 100px;
+            height: 100px;
+            background: linear-gradient(135deg, #a29bfe, #6c5ce7);
+            bottom: 30%;
+            left: 10%;
+            animation: floatB 7s ease-in-out infinite;
+        }
+
+        @keyframes floatA {
+            0%, 100% { transform: translateY(0) scale(1); }
+            50% { transform: translateY(-30px) scale(1.05); }
+        }
+
+        @keyframes floatB {
+            0%, 100% { transform: translateY(0) scale(1); }
+            50% { transform: translateY(20px) scale(0.95); }
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            box-shadow:
+                0 8px 32px rgba(0, 0, 0, 0.3),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        .navbar {
+            position: relative;
+            z-index: 100;
+            width: 100%;
+            max-width: 1200px;
+            padding: 14px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-radius: 60px;
+            flex-shrink: 0;
+        }
+
+        .nav-logo {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #a29bfe, #48dbfb);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-decoration: none;
+            letter-spacing: 1px;
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            list-style: none;
+        }
+
+        .nav-links button {
+            color: rgba(255, 255, 255, 0.6);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 400;
+            padding: 8px 20px;
+            border-radius: 60px;
+            transition: all 0.3s;
+            letter-spacing: 1px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .nav-links button:hover {
+            color: #ffffff;
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .nav-links button.active {
+            color: #ffffff;
+            background: rgba(162, 155, 254, 0.15);
+            border: 1px solid rgba(162, 155, 254, 0.2);
+        }
+
+        .nav-toggle {
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            cursor: pointer;
+            padding: 4px;
+            background: none;
+            border: none;
+        }
+
+        .nav-toggle span {
+            width: 24px;
+            height: 2px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 2px;
+            transition: all 0.3s;
+        }
+
+        .nav-overlay {
+            display: none;
+        }
+
+        .main-wrapper {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 1200px;
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            align-items: flex-start;
+            padding-top: 20px;
+            overflow: hidden;
+        }
+
+        .pages-track {
+            display: flex;
+            width: 100%;
+            transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            will-change: transform;
+        }
+
+        .page {
+            width: 100%;
+            flex-shrink: 0;
+            padding-right: 0;
+            overflow-y: auto;
+            max-height: calc(100vh - 120px);
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+        }
+
+        .page::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .page::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .page::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .page-inner {
+            padding-right: 4px;
+        }
+
+        .page-inner > *:last-child {
+            margin-bottom: 0;
+        }
+
+        .hero {
+            text-align: center;
+            padding: 50px 40px 44px;
+            margin-bottom: 28px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background:
+                radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.05) 0%, transparent 60%),
+                radial-gradient(circle at 70% 70%, rgba(138, 43, 226, 0.08) 0%, transparent 50%);
+            border-radius: 24px;
+        }
+
+        .logo-area {
+            position: relative;
+            z-index: 1;
+            display: inline-block;
+            margin-bottom: 16px;
+        }
+
+        .logo-icon {
+            width: 90px;
+            height: 90px;
+            margin: 0 auto 16px;
+            background: linear-gradient(135deg, rgba(138, 43, 226, 0.3), rgba(72, 209, 204, 0.3));
+            border-radius: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            position: relative;
+        }
+
+        .logo-icon span {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 32px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #a29bfe, #48dbfb, #feca57);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero h1 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 44px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #ffffff 30%, #a29bfe 70%, #48dbfb);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            position: relative;
+            z-index: 1;
+            letter-spacing: 2px;
+        }
+
+        .hero .subtitle {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.5);
+            letter-spacing: 6px;
+            margin-top: 6px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .chinese-name {
+            font-size: 18px;
+            color: rgba(255, 255, 255, 0.7);
+            margin-top: 10px;
+            position: relative;
+            z-index: 1;
+            letter-spacing: 4px;
+        }
+
+        .hero .divider {
+            width: 80px;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(162, 155, 254, 0.6), transparent);
+            margin: 14px auto 0;
+        }
+
+        .hero .tagline {
+            font-size: 15px;
+            color: rgba(255, 255, 255, 0.6);
+            margin-top: 14px;
+            position: relative;
+            z-index: 1;
+            letter-spacing: 2px;
+        }
+
+        .home-cards {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .home-card {
+            padding: 30px 28px;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            cursor: default;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .home-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, transparent 40%, rgba(255, 255, 255, 0.02) 100%);
+            pointer-events: none;
+        }
+
+        .home-card:hover {
+            transform: translateY(-6px) scale(1.01);
+            border-color: rgba(162, 155, 254, 0.3);
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+        }
+
+        .home-card .card-icon {
+            font-size: 34px;
+            margin-bottom: 12px;
+            display: block;
+        }
+
+        .home-card h3 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #ffffff;
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+        }
+
+        .home-card p {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.6);
+            line-height: 1.8;
+            font-weight: 300;
+        }
+
+        .game-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .game-tag {
+            padding: 5px 14px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.7);
+            letter-spacing: 1px;
+            transition: all 0.3s;
+        }
+
+        .game-tag:hover {
+            background: rgba(162, 155, 254, 0.15);
+            border-color: rgba(162, 155, 254, 0.3);
+            color: #fff;
+        }
+
+        .games-header {
+            text-align: center;
+            padding: 40px 40px 36px;
+            margin-bottom: 28px;
+        }
+
+        .games-header .page-icon {
+            font-size: 50px;
+            margin-bottom: 12px;
+            display: block;
+        }
+
+        .games-header h2 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 10px;
+            letter-spacing: 2px;
+        }
+
+        .games-header p {
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.5);
+            font-weight: 300;
+            letter-spacing: 1px;
+        }
+
+        .games-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+        }
+
+        .game-placeholder {
+            padding: 36px 20px;
+            border-radius: 20px;
+            text-align: center;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px dashed rgba(255, 255, 255, 0.1);
+            transition: all 0.4s;
+        }
+
+        .game-placeholder:hover {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: rgba(162, 155, 254, 0.2);
+            transform: translateY(-4px);
+        }
+
+        .game-placeholder .game-icon {
+            font-size: 38px;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        .game-placeholder h4 {
+            font-size: 15px;
+            color: rgba(255, 255, 255, 0.5);
+            font-weight: 400;
+            letter-spacing: 1px;
+        }
+
+        .game-placeholder .coming-soon {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 4px 12px;
+            font-size: 10px;
+            color: rgba(162, 155, 254, 0.7);
+            border: 1px solid rgba(162, 155, 254, 0.15);
+            border-radius: 20px;
+            letter-spacing: 2px;
+        }
+
+        .game-link {
+            text-decoration: none;
+            display: block;
+        }
+
+        .play-now {
+            color: rgba(72, 209, 204, 0.9) !important;
+            border-color: rgba(72, 209, 204, 0.3) !important;
+            background: rgba(72, 209, 204, 0.08) !important;
+        }
+
+        .game-link:hover .play-now {
+            background: rgba(72, 209, 204, 0.18) !important;
+            color: #48dbfb !important;
+        }
+
+        .about-cards {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .about-card {
+            padding: 30px 28px;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            cursor: default;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .about-card:last-child {
+            grid-column: 1 / -1;
+        }
+
+        .about-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, transparent 40%, rgba(255, 255, 255, 0.02) 100%);
+            pointer-events: none;
+        }
+
+        .about-card:hover {
+            transform: translateY(-6px) scale(1.01);
+            border-color: rgba(162, 155, 254, 0.3);
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+        }
+
+        .about-card .card-icon {
+            font-size: 34px;
+            margin-bottom: 12px;
+            display: block;
+        }
+
+        .about-card h3 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #ffffff;
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+        }
+
+        .about-card p {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.6);
+            line-height: 1.8;
+            font-weight: 300;
+        }
+
+        .philosophy-list {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .philosophy-item {
+            padding: 20px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            text-align: center;
+        }
+
+        .philosophy-item strong {
+            display: block;
+            font-size: 14px;
+            margin-bottom: 6px;
+            letter-spacing: 1px;
+        }
+
+        .philosophy-item span {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.4);
+            font-weight: 300;
+        }
+
+        .page-footer {
+            text-align: center;
+            padding: 20px 40px;
+            margin-top: 28px;
+        }
+
+        .page-footer p {
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 12px;
+            letter-spacing: 1px;
+            font-weight: 300;
+        }
+
+        .page-footer .footer-divider {
+            width: 40px;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.08);
+            margin: 0 auto 10px;
+        }
+
+        @media (max-width: 768px) {
+            body { padding: 12px; }
+            .navbar { padding: 12px 20px; border-radius: 40px; }
+            .nav-links {
+                position: fixed;
+                top: 0;
+                right: -100%;
+                width: 260px;
+                height: 100vh;
+                background: rgba(15, 12, 41, 0.95);
+                backdrop-filter: blur(30px);
+                -webkit-backdrop-filter: blur(30px);
+                flex-direction: column;
+                justify-content: center;
+                gap: 12px;
+                padding: 40px;
+                transition: right 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                z-index: 200;
+                border-left: 1px solid rgba(255, 255, 255, 0.06);
+            }
+            .nav-links.open { right: 0; }
+            .nav-links button { font-size: 16px; padding: 12px 24px; width: 100%; text-align: center; }
+            .nav-toggle { display: flex; z-index: 300; }
+            .nav-overlay {
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.4);
+                z-index: 150;
+            }
+            .nav-overlay.show { display: block; }
+            .main-wrapper { padding-top: 14px; }
+            .page { max-height: calc(100vh - 100px); }
+            .hero { padding: 36px 24px 32px; }
+            .hero h1 { font-size: 30px; }
+            .hero .subtitle { font-size: 11px; letter-spacing: 4px; }
+            .logo-icon { width: 76px; height: 76px; }
+            .logo-icon span { font-size: 26px; }
+            .home-cards { grid-template-columns: 1fr; gap: 14px; }
+            .home-card { padding: 24px 22px; }
+            .games-header { padding: 32px 24px 28px; }
+            .games-header h2 { font-size: 22px; }
+            .games-grid { grid-template-columns: 1fr; gap: 14px; }
+            .about-cards { grid-template-columns: 1fr; gap: 14px; }
+            .about-card { padding: 24px 22px; }
+            .philosophy-list { grid-template-columns: 1fr; gap: 12px; }
+            .page-footer { padding: 16px 24px; }
+        }
+
+        @media (max-width: 480px) {
+            .hero h1 { font-size: 24px; }
+            .home-card h3 { font-size: 17px; }
+            .about-card h3 { font-size: 17px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="floating-shapes">
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+    </div>
+
+    <nav class="navbar glass-card">
+        <span class="nav-logo">MNCstudio</span>
+        <ul class="nav-links" id="navLinks">
+            <li><button class="active" data-page="0">首页</button></li>
+            <li><button data-page="1">游戏</button></li>
+            <li><button data-page="2">关于</button></li>
+        </ul>
+        <button class="nav-toggle" id="navToggle" aria-label="菜单">
+            <span></span>
+            <span></span>
+            <span></span>
+        </button>
+    </nav>
+    <div class="nav-overlay" id="navOverlay"></div>
+
+    <div class="main-wrapper">
+        <div class="pages-track" id="pagesTrack">
+            <div class="page" data-index="0">
+                <div class="page-inner">
+                    <div class="hero glass-card">
+                        <div class="logo-area">
+                            <div class="logo-icon">
+                                <span>MNC</span>
+                            </div>
+                        </div>
+                        <h1>MNCstudio</h1>
+                        <p class="subtitle">MonkeyNegroChessStudio</p>
+                        <p class="chinese-name">猴子棋工作室</p>
+                        <div class="divider"></div>
+                        <p class="tagline">专注游戏开发 · 创造无限乐趣</p>
+                    </div>
+
+                    <div class="home-cards">
+                        <div class="home-card glass-card">
+                            <span class="card-icon">🎮</span>
+                            <h3>关于我们</h3>
+                            <p>
+                                MNCstudio 是一支充满创意与热情的游戏开发团队。
+                                我们相信每一行代码都能创造快乐，每一个像素都能承载梦想。
+                            </p>
+                        </div>
+                        <div class="home-card glass-card">
+                            <span class="card-icon">🎯</span>
+                            <h3>游戏类型</h3>
+                            <p>多元化游戏开发，覆盖多种类型：</p>
+                            <div class="game-tags">
+                                <span class="game-tag">棋盘策略</span>
+                                <span class="game-tag">角色扮演</span>
+                                <span class="game-tag">动作冒险</span>
+                                <span class="game-tag">休闲益智</span>
+                                <span class="game-tag">多人竞技</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="page-footer">
+                        <div class="footer-divider"></div>
+                        <p>© 2026 MNCstudio · 猴子棋工作室</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="page" data-index="1">
+                <div class="page-inner">
+                    <div class="games-header glass-card">
+                        <span class="page-icon">🎮</span>
+                        <h2>我们的游戏</h2>
+                        <p>更多精彩游戏正在开发中，敬请期待</p>
+                    </div>
+
+                    <div class="games-grid">
+                        <a href="games/monkeychess/index.html" class="game-placeholder game-link">
+                            <span class="game-icon">🎲</span>
+                            <h4>猴子棋</h4>
+                            <span class="coming-soon play-now">开始游戏</span>
+                        </a>
+                        <div class="game-placeholder">
+                            <span class="game-icon">⚔️</span>
+                            <h4>角色扮演</h4>
+                            <span class="coming-soon">COMING SOON</span>
+                        </div>
+                        <div class="game-placeholder">
+                            <span class="game-icon">🎯</span>
+                            <h4>动作冒险</h4>
+                            <span class="coming-soon">COMING SOON</span>
+                        </div>
+                        <div class="game-placeholder">
+                            <span class="game-icon">🧩</span>
+                            <h4>休闲益智</h4>
+                            <span class="coming-soon">COMING SOON</span>
+                        </div>
+                        <div class="game-placeholder">
+                            <span class="game-icon">🏆</span>
+                            <h4>多人竞技</h4>
+                            <span class="coming-soon">COMING SOON</span>
+                        </div>
+                        <div class="game-placeholder">
+                            <span class="game-icon">💡</span>
+                            <h4>独立创意</h4>
+                            <span class="coming-soon">COMING SOON</span>
+                        </div>
+                    </div>
+
+                    <div class="page-footer">
+                        <div class="footer-divider"></div>
+                        <p>敬请期待更多精彩游戏</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="page" data-index="2">
+                <div class="page-inner">
+                    <div class="about-cards">
+                        <div class="about-card glass-card">
+                            <span class="card-icon">🎮</span>
+                            <h3>关于我们</h3>
+                            <p>
+                                MNCstudio 是一支充满创意与热情的游戏开发团队。
+                                我们相信每一行代码都能创造快乐，每一个像素都能承载梦想。
+                                从棋盘策略到动作冒险，我们不断探索游戏的可能性。
+                            </p>
+                        </div>
+
+                        <div class="about-card glass-card">
+                            <span class="card-icon">🎯</span>
+                            <h3>游戏类型</h3>
+                            <p>我们致力于多元化的游戏开发，覆盖多种类型：</p>
+                            <div class="game-tags">
+                                <span class="game-tag">棋盘策略</span>
+                                <span class="game-tag">角色扮演</span>
+                                <span class="game-tag">动作冒险</span>
+                                <span class="game-tag">休闲益智</span>
+                                <span class="game-tag">多人竞技</span>
+                                <span class="game-tag">独立创意</span>
+                            </div>
+                        </div>
+
+                        <div class="about-card glass-card">
+                            <span class="card-icon">🌟</span>
+                            <h3>核心理念</h3>
+                            <div class="philosophy-list">
+                                <div class="philosophy-item">
+                                    <strong style="color: rgba(162, 155, 254, 0.9);">创意驱动</strong>
+                                    <span>每个想法都值得被实现</span>
+                                </div>
+                                <div class="philosophy-item">
+                                    <strong style="color: rgba(72, 209, 204, 0.9);">品质至上</strong>
+                                    <span>打磨细节，追求卓越</span>
+                                </div>
+                                <div class="philosophy-item">
+                                    <strong style="color: rgba(254, 202, 87, 0.9);">玩家为本</strong>
+                                    <span>创造真正的快乐体验</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="page-footer">
+                        <div class="footer-divider"></div>
+                        <p>© 2026 MNCstudio (MonkeyNegroChessStudio) · 猴子棋工作室</p>
+                        <p style="margin-top: 4px; font-size: 11px;">Stay curious, keep playing.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const track = document.getElementById('pagesTrack');
+        const navBtns = document.querySelectorAll('.nav-links button');
+        const navToggle = document.getElementById('navToggle');
+        const navLinks = document.getElementById('navLinks');
+        const navOverlay = document.getElementById('navOverlay');
+        const pages = document.querySelectorAll('.page');
+        let currentPage = 0;
+
+        navToggle.addEventListener('click', () => {
+            navLinks.classList.toggle('open');
+            navOverlay.classList.toggle('show');
+        });
+
+        navOverlay.addEventListener('click', () => {
+            navLinks.classList.remove('open');
+            navOverlay.classList.remove('show');
+        });
+
+        function switchPage(index) {
+            if (index === currentPage) return;
+            navLinks.classList.remove('open');
+            navOverlay.classList.remove('show');
+            currentPage = index;
+            track.style.transform = `translateX(-${index * 100}%)`;
+            navBtns.forEach((btn, i) => {
+                btn.classList.toggle('active', i === index);
+            });
+        }
+
+        navBtns.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                switchPage(parseInt(btn.dataset.page));
+            });
+        });
+    </script>
+</body>
+</html>
