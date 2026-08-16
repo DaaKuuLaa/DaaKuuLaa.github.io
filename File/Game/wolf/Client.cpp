@@ -1672,6 +1672,8 @@ static const HelpDetail HELP_DETAILS[] = {
                 "JOIN <port>: join the room on that port (rejected if full or banned)." },
     { "NAME", "NAME <新名字>：改名（全服唯一，重名被拒；仅中英文/数字/下划线，限 10 码点，至少 2 个字符，不能是 IP 格式）。",
                 "NAME <new name>: rename (unique server-wide; letters/digits/CJK/underscore only, at most 10 code points, at least 2 chars, no IP-like names)." },
+    { "NPCKEY", "NPCKEY <key>：设置/查询 AI key（全局配置，任意连接可用）。空参数=查询状态（不回显 key）；key 仅允许字母数字/连字符/下划线/点。设置后在线 NPC 立即启用（DPAPI 加密落盘 npc_key.bin）。",
+                "NPCKEY <key>: set/query the AI key (global config, usable from any connection). No arg shows status (key never echoed); key allows letters/digits/hyphen/underscore/dot. Online NPCs activate right after setting (stored DPAPI-encrypted as npc_key.bin)." },
     { "VOTE", "VOTE <编号>（短别名 V）：白天投票放逐，编号=玩家槽位，0=弃权。",
                 "VOTE <number> (alias V): vote to exile during the day; the number is the player's slot, 0=abstain." },
     { "BOMB", "BOMB <编号>（短别名 B）：白狼王白天自爆，带走一名玩家并立即进入夜晚。",
@@ -1815,6 +1817,27 @@ void HandleCommand(const string& line)
 
         g_playerName = n;
         SendRaw("NAME|" + n);
+        return;
+    }
+
+    // ==== NPCKEY：设置/查询 AI key（任何状态可用，转发给 Start 处理）====
+    // 字符校验与 Start 一致：协议分隔符 | 与空白都不进协议行，防止 key 拆坏协议
+    if (cmd != nullptr && _stricmp(cmd->en, "NPCKEY") == 0)
+    {
+        for (char c : args)
+        {
+            bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+
+            if (!ok)
+            {
+                cout << Txt(CurLang(), "AI key 只能包含字母数字/连字符/下划线/点",
+                            "AI key may only contain letters, digits, hyphen, underscore and dot") << endl;
+                return;
+            }
+        }
+
+        SendRaw("NPCKEY|" + args);
         return;
     }
 

@@ -243,6 +243,7 @@ const CommandEntry COMMANDS[] = {
     // ---- 通用 ----
     { "HELP",    "帮助",     "",    "[ALL|职业名]", "显示命令帮助；HELP ALL 查看全部职业列表", "Show command help; HELP ALL lists all roles", CMD_GROUP_COMMON },
     { "NAME",    "名字",     "",    "<新名字>",     "改名（全服唯一，重名会被拒绝；名字不能是 IP 格式）", "Rename (unique server-wide; IP-like names are rejected)", CMD_GROUP_COMMON },
+    { "NPCKEY",  "AI秘钥",   "",    "<key>",        "设置/查询 AI key（全局配置；空参数查询状态，不回显 key）", "Set/query the AI key (global config; no arg shows status, key never echoed)", CMD_GROUP_COMMON },
     { "EXIT",    "退出",     "",    "",             "离开房间 / 游戏 / 退出程序", "Leave room / game / quit", CMD_GROUP_COMMON },
     // ---- 大厅 ----
     { "LIST",    "列表",     "",    "",             "查看房间列表", "List rooms", CMD_GROUP_LOBBY },

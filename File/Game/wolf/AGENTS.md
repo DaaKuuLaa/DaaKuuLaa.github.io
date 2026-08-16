@@ -2,7 +2,7 @@
 
 联网控制台版狼人杀 C++ 项目。源码：`Start.cpp`（房间管理器）/ `Server.cpp`（单局服务器）/ `Client.cpp`（客户端）/ `common.h`（共享协议与职业表），测试脚本在 `tests/`。狼人杀复用了 `reference/demon/`（恶魔轮盘，已完成的参考项目）已验证的架构、协议思路和所有已修复的坑。
 
-> 当前状态：**第十三轮验收完成（§23）**。round13_test.ps1 34 项全 PASS：在线 AI 接入（智谱 glm-4.7-flash、fake_ai 验证 Authorization: Bearer + key 落盘 npc_key.bin DPAPI 加密 + 无 key/超时回退离线）+ 离线 NPC 智能提升（槽位号/缩写提及必答、模板扩到 14+ 变体、主动发言 WOLF_NPC_PROACTIVE_MS）+ 禁言 NPC 修复（MUTE 后 @ 不广播）+ 局内 NPC 修复（白天被 @ 接话）+ LEVEL3 新职业（bear 驯熊师/crow 乌鸦/knight 骑士/wolfbeauty 狼美人：ROLE/夜晚/胜负/挑战/咆哮/污票/殉情全走通）。**本轮修复**：round12 崩溃根因 = `NpcRandInt(lo,hi)` 闭区间含 hi，而模板数组索引写成 `Arr[NpcRandInt(0,N)]` 对 N 元素越界（AV 14 个用 0..14、NV 11 个用 0..11、GV 8 个用 0..8、TV 6 个用 0..6，共 6 处）→ 越界读返回相邻数组垃圾指针 → 全局堆损坏、延迟到 map/vector 操作崩溃（Start.cpp offset 0x719B0 = vector<bool>::size()，R2 段第 2 次 @ 触发）；round11/12/13 Start-RM 加 TCP 就绪探针（本机负载高时 Start 2s 内未完成监听，S1/S4 段偶发 Connect 8888 被拒）；round3/server_test/server_test8 女巫解药协议改 `1`（旧脚本按目标槽号发会被 "Enter 1 or 0." 拒掉重问 → 首夜不救 + 狼刀随机屠边时白天不到）；round12 R5-1 在线回复断言超时 6000→12000（retries=1 最坏 3s+2s+3s=8s）；Start.cpp 加 CrashDumpHandler（写 crash.log 含 code/addr/mod/offset，绕开 cout 缓冲坑 20，崩溃排查利器，保留）。**回归**：16 套脚本全 PASS（proto/server/server_test8/pen/speech/round3~round13）。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
+> 当前状态：**第十四轮调查与修复（round14）**。用户新报两个问题：(1) 真实智谱 GLM 调不通——根因 = **无 key 配置入口**（只有 env `WOLF_NPC_API_KEY` 与 DPAPI 落盘文件两个来源，运行时无法设置，start.log 里 `NPC-ONLINE-REQ ... url=(none) key=(empty)` 即此）；(2) Start 放置一段时间后异常退出——崩溃 `code=c0000005 offset=0x71850` 确定性复现（两次同地址，GetTickCount64 间隔约 22.7 分钟），Start.map 定位 = `TryStart` 的 EH 展开清理函数 `dtor$1@TryStart`（析构 Line 1617 第 3 个临时 string `$T9`，`lea rcx,$T9[rbp] + call ~string`，RIP=dtor$1+0x14 = call 指令内）——**TryStart 无 throw 源 → 展开必由 try 块内异常触发 → 堆已损坏（string 操作异常后展开析构坏 string 二次崩溃）**；静态审查全部 NPC/广播/锁路径未找到越界（AV/NV/GV/TV/SV 模板索引已逐一核对、NpcRoomBroadcast/Speak/Proactive/PickTopic/RoomMsg/SendToRoomMembers 无越界、锁序 房间锁→chatMutex 正确）。**本轮修复**：① **NPCKEY 命令**（设置/查询 AI key：`NPCKEY <key>` 任意连接可用，仅字母数字/连字符/下划线/点，空参数查状态不回显 key，DPAPI 落盘 + 立即生效，补齐 §23.1 运行时配置入口——GLM 调不通的直接解法）；② `NpcResolveKey` static 缓存无锁 data race（Start 在线回复线程与主线程并发首次解析会写坏 cached，与崩溃同源嫌疑）→ 缓存移入匿名命名空间 + mutex 覆盖读写，新增 `NpcKeySet`；③ `SendToClient` send 失败不再 closesocket（在线回复线程与主线程并发 send 同一大厅连接，双 close 会误杀句柄复用的新连接；失败连接由主循环 recv 0 统一清理，延迟最多一个心跳周期）；④ `CrashDumpHandler` 增强：thread id + 全部寄存器 + 栈顶 24 QWORD（__try 保护）——下轮若用户复现，crash.log 可直接反推展开帧与临时对象地址。**回归**：round13 34/34、round12 17/17（R2-2 30%×5 试概率断言首跑偶发 FAIL 重跑过）、proto 60/60、NPCKEY 手动验证 4/4。**待办**：部署后用户复现验证崩溃是否仍发生（新 crash.log 有寄存器+栈）；若仍崩则按栈数据追堆损坏源（候选：NpcResolveKey 旧竞态已被修、SendToClient 双 close 已被修）。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
 
 ## 工作目录铁律（最重要）
 
@@ -36,6 +36,7 @@
 通用：
 - `HELP [ALL|职业名]`：命令帮助（含短别名列）；HELP ALL 输出全部职业列表；带职业名输出职业详细介绍（中/英职业名均可）。
 - `NAME <新名>`：改名。全服唯一，重名拒绝；限 10 码点；**净化后码点数 < 2 拒绝**（单字符/单数字/单汉字，提示「名字至少需要 2 个字符」；空名回退 Player）；**白名单字符集：仅中英文/数字/下划线**（含空格、连字符、点号、全角、emoji 一律拒绝）；禁止 IP 格式（含前导零/点分数字形似）；客户端与服务端双重校验；BAN 参数不受长度限制。
+- `NPCKEY <key>`：设置/查询 AI key（全局配置，任意连接可用；空参数查状态不回显 key）。key 仅字母数字/连字符/下划线/点（256 上限），DPAPI 加密落盘 npc_key.bin + 内存缓存立即生效，在线 NPC 随即启用（§23.1 运行时配置入口）。
 
 大厅：
 - `LIST`：房间列表（含人数、游戏中标记；**房间内也可用**）；`CREATE <端口>`（短别名 `CR`）：建房；`JOIN <端口>`：按端口入房。
@@ -124,6 +125,8 @@
 35. **女巫解药协议是 1/0 不是槽号（round3 6.5-6.7 假失败根因）**：Server 的 witch 解药提示「Use the antidote? (1 = yes, 0 = no)」——**输入 1=救当夜狼刀目标、0=不救**。旧脚本发目标槽号会被拒重问 → 首夜不救 → 4 人局狼刀恰选村民时屠民狼胜、白天不到（角色随机 1/3 概率假 FAIL）。**round3/server_test/server_test8 的 witch 解药分支统一发 `PLAYER_k|1`**。
 36. **Start-RM 无就绪探针（round11 S1/S4 段偶发 8888 拒连）**：Start-Process 后 Start-Sleep 2s，本机负载高时 Start 未完成监听 → Connect 被拒、整段 FAIL。**Start-RM 必须加 TCP 就绪探针**（连接成功才继续，round11/12/13 已加）。
 37. **round12 R5-1 断言窗口 6s < 在线最坏 8s**：NpcOnlineRoomChat retries=1 时最坏 3s 超时 + 2s 重试间隔 + 3s 超时 = 8s，RecvUntilStream 6000 偶发超时。**在线断言窗口按 retries 最坏路径给足（12000）**。
+38. **`NpcResolveKey` 的 static 缓存无锁（round14 崩溃同源嫌疑）**：Start 在线回复线程（NpcRoomOnlineReplyThread）与主线程可并发首次解析 key——static `resolved`/`cached` 无锁读写是 data race，并发赋值 string 会写坏缓存（返回半写字符串）。**修法：缓存移入匿名命名空间 + mutex 覆盖读写**（新增 `NpcKeySet` 供 NPCKEY 命令刷新，见坑 39）。
+39. **`SendToClient` 发送失败 closesocket 与在线线程构成双 close**：在线 NPC 回复线程（NpcRoomBroadcast→RoomMsg→SendToRoomMembers）与主循环可并发 send 同一大厅连接；线程 A send 失败 close 后句柄被系统回收，线程 B 又对该句柄 close → 误杀句柄复用的新连接。**修法：SendToClient send 失败只 Log 不 close，失败连接由主循环 select/recv 0 统一清理（延迟最多一个心跳周期）**——踢人等主动关闭路径不受影响。
 
 ## 需求规格（狼人杀版，作为验收依据）
 

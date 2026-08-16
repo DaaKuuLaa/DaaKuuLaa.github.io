@@ -572,8 +572,12 @@ void SendToClient(SOCKET sock, const string& msg)
 
         if (sent <= 0)
         {
+            // 发送失败不能在这里 closesocket：在线 NPC 回复线程（NpcRoomOnlineReplyThread）
+            // 与主循环可能并发 send 同一大厅连接，此处 close 与主线程的 close 构成
+            // 双 close——句柄被系统回收复用后会把新连接误杀（round13 后新发现）。
+            // 失败连接不清理由主循环 select/recv 自然发现（对端 RST 后 recv 返回 0）
+            // 走统一断线清理，延迟最多一个心跳周期
             Log("SEND FAIL sock=" + to_string(sock) + " err=" + to_string(WSAGetLastError()) + " msg=[" + msg + "]");
-            closesocket(sock);
             return;
         }
 
@@ -2280,6 +2284,44 @@ void HandleCommand(SOCKET sock, const string& line)
             room->slots[ci.slot].lang = l;
         }
 
+        return;
+    }
+
+    // NPCKEY|<key>：设置/查询 AI key（全局配置，任意连接可用）。key 只允许
+    // [A-Za-z0-9._-]（协议分隔符 | 与空白都排除）；空参数=查询当前状态，
+    // 不回显 key 本身防泄露。落盘 DPAPI 加密 npc_key.bin，在线 NPC 立即生效
+    //（§23.1 只有 env/文件两个配置入口，运行时无法设置是"调不通 glm"根因）
+    if (upper == "NPCKEY")
+    {
+        if (argStr.empty())
+        {
+            string cur = NpcResolveKey();
+            SendToClient(sock, "ROOM_MSG|" + string(cur.empty()
+                ? "AI key 未配置：在线 NPC 将回退离线模板（用 NPCKEY <key> 设置）"
+                : "AI key 已配置，在线 NPC 可用"));
+            return;
+        }
+
+        if (argStr.size() > 256)
+        {
+            SendToClient(sock, "ROOM_MSG|AI key 过长（最多 256 字符），设置失败");
+            return;
+        }
+
+        for (char c : argStr)
+        {
+            bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+
+            if (!ok)
+            {
+                SendToClient(sock, "ROOM_MSG|AI key 含非法字符（仅字母数字/连字符/下划线/点），设置失败");
+                return;
+            }
+        }
+
+        NpcKeySet(argStr);
+        SendToClient(sock, "ROOM_MSG|AI key 已保存（DPAPI 加密落盘 npc_key.bin），在线 NPC 立即启用");
         return;
     }
 
@@ -5041,16 +5083,51 @@ static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* ep)
         if (ep && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                                      (LPCSTR)ep->ExceptionRecord->ExceptionAddress, &hMod))
         {
-            fprintf(f, "[%llu] code=%08x addr=%p mod=%p offset=%p\n",
+            fprintf(f, "[%llu] thread=%lu code=%08x addr=%p mod=%p offset=%p\n",
                     (unsigned long long)GetTickCount64(),
+                    (unsigned long)GetCurrentThreadId(),
                     ep->ExceptionRecord->ExceptionCode,
                     ep->ExceptionRecord->ExceptionAddress,
                     (void*)hMod,
-                    (char*)ep->ExceptionRecord->ExceptionAddress - (char*)hMod);
+                    (void*)((char*)ep->ExceptionRecord->ExceptionAddress - (char*)hMod));
+
+            if (ep->ContextRecord)
+            {
+                const CONTEXT* c = ep->ContextRecord;
+                fprintf(f, "  rip=%p rsp=%p rbp=%p rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p\n",
+                        (void*)c->Rip, (void*)c->Rsp, (void*)c->Rbp,
+                        (void*)c->Rax, (void*)c->Rbx, (void*)c->Rcx, (void*)c->Rdx,
+                        (void*)c->Rsi, (void*)c->Rdi);
+                fprintf(f, "  r8=%p r9=%p r10=%p r11=%p r12=%p r13=%p r14=%p r15=%p\n",
+                        (void*)c->R8, (void*)c->R9, (void*)c->R10, (void*)c->R11,
+                        (void*)c->R12, (void*)c->R13, (void*)c->R14, (void*)c->R15);
+
+                // 栈顶 24 个 QWORD：EH 展开/析构崩溃时返回链就在栈上，
+                // 连同寄存器可以反推展开时各临时对象的实际位置与内容
+                fprintf(f, "  stack:");
+
+                ULONG_PTR* sp = (ULONG_PTR*)c->Rsp;
+
+                for (int i = 0; i < 24; ++i)
+                {
+                    __try
+                    {
+                        fprintf(f, " %p", (void*)sp[i]);
+                    }
+                    __except (EXCEPTION_EXECUTE_HANDLER)
+                    {
+                        fprintf(f, " <bad>");
+                        break;
+                    }
+                }
+
+                fprintf(f, "\n");
+            }
         }
         else
         {
-            fprintf(f, "[%llu] code=%08x addr=%p\n", (unsigned long long)GetTickCount64(),
+            fprintf(f, "[%llu] thread=%lu code=%08x addr=%p\n", (unsigned long long)GetTickCount64(),
+                    (unsigned long)GetCurrentThreadId(),
                     ep ? ep->ExceptionRecord->ExceptionCode : 0,
                     ep ? ep->ExceptionRecord->ExceptionAddress : nullptr);
         }

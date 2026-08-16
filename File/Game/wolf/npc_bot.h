@@ -2388,15 +2388,24 @@ inline string NpcKeyLoad()
 }
 
 // key 解析总入口（static 缓存；env > 加密文件 > 空）。返回空串由调用方
-// 提示「未配置 AI key，在线 NPC 回退离线决策」并直接走离线逻辑
+// 提示「未配置 AI key，在线 NPC 回退离线决策」并直接走离线逻辑。
+// 缓存移出函数体（匿名命名空间）：NpcKeySet（NPCKEY 命令）要能刷新它，
+// 且 Start 的在线回复线程与主线程并发首次解析时无锁会 data race 写坏
+// cached（round14 新发现，与 TryStart 崩溃同源嫌疑）——锁必须覆盖读写
+namespace
+{
+mutex g_npcKeyMutex;
+string g_npcKeyCached;
+bool g_npcKeyResolved = false;
+}
+
 inline string NpcResolveKey()
 {
-    static string cached;
-    static bool resolved = false;
+    lock_guard<mutex> lk(g_npcKeyMutex);
 
-    if (resolved) return cached;
+    if (g_npcKeyResolved) return g_npcKeyCached;
 
-    resolved = true;
+    g_npcKeyResolved = true;
 
     string k = NpcEnvOr("WOLF_NPC_API_KEY", "");
 
@@ -2404,14 +2413,26 @@ inline string NpcResolveKey()
     {
         // env 是一次性注入来源，落盘后后续启动不再依赖外部环境
         NpcKeySave(k);
-        cached = k;
+        g_npcKeyCached = k;
 
-        return cached;
+        return g_npcKeyCached;
     }
 
-    cached = NpcKeyLoad();
+    g_npcKeyCached = NpcKeyLoad();
 
-    return cached;
+    return g_npcKeyCached;
+}
+
+// 运行时设置 key（NPCKEY 命令）：非空则 DPAPI 落盘 + 刷新缓存，在线 NPC
+// 立即生效；空串仅清除内存缓存（进程内回退离线，不删盘上文件）
+inline void NpcKeySet(const string& k)
+{
+    lock_guard<mutex> lk(g_npcKeyMutex);
+
+    if (!k.empty()) NpcKeySave(k);
+
+    g_npcKeyCached = k;
+    g_npcKeyResolved = true;
 }
 
 // 是否有可用 key（Server 在调在线决策前先问，避免无 key 白等一轮网络超时）
