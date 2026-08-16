@@ -1,6 +1,6 @@
 # 狼人杀（联网控制台版）需求文档
 
-状态：**第九轮完成（§19：JOIN 分支空指针修复、命令封装与输出、槽位空洞压缩名单、兜底回滚与 REJOIN、本地用户窗口与在线 NPC 全流程）**（round9_test.ps1 **47 项全 PASS**，含在线 NPC 发言/API/自动入房）。第一至八轮已实现并通过 tests/ 脚本。本文档是编码与验收的唯一依据，修改需求必须同步更新本文档。
+状态：**第十三轮已完成（§23：真实智谱 AI 接入、离线 NPC 智能提升、槽位号回应、禁言 NPC 修复、LEVEL3 新职业）**。round13_test.ps1 全 PASS，且既有 12 套脚本 + server_test8 全回归 PASS。第一至十二轮均已实现并通过 tests/ 脚本。本文档是编码与验收的唯一依据，修改需求必须同步更新本文档。
 
 ## 1. 总体目标
 
@@ -190,7 +190,7 @@ Windows 控制台程序，MSVC C++ 实现，三进程联机架构（完全复用
 
 ## 8. 验收标准（达成即完成）
 
-> 现状：本章验收项已由 `tests/` 自动化脚本覆盖并通过（proto_test.ps1 60 项协议级验收、server_test.ps1 5 项 4 人直连局、server_test8.ps1 5 项 8 人全流程直连局、pen_test.ps1 71 项渗透专项、speech_test.ps1 20 项白天交互专项、round3_test.ps1 37 项第三轮验收、round4_test.ps1 52 项第四轮验收、round5_test.ps1 56 项第五轮验收（死亡提示/游戏结束直接回房/IP·LG/BAN·UNBAN 批量与文件/NAME 白名单/攻击用例），全部 PASS，运行方式见 AGENTS.md「测试」小节）。
+> 现状：本章验收项已由 `tests/` 自动化脚本覆盖并通过（proto_test.ps1 60 项协议级验收、server_test.ps1 5 项 4 人直连局、server_test8.ps1 5 项 8 人全流程直连局、pen_test.ps1 71 项渗透专项、speech_test.ps1 20 项白天交互专项、round3_test.ps1 37 项第三轮验收、round4_test.ps1 52 项第四轮验收、round5_test.ps1 56 项第五轮验收、round6_test.ps1 40 项第六轮验收、round7_test.ps1 10 项第七轮验收、round8_test.ps1 16 项第八轮验收、round9_test.ps1 47 项第九轮验收、round10_test.ps1 23 项第十轮验收、round11_test.ps1 37 项第十一轮验收、round12_test.ps1 17 项第十二轮验收、round13_test.ps1 34 项第十三轮验收（§23），全部 PASS，运行方式见 AGENTS.md「测试」小节）。
 
 ### 8.1 联机流程验收（本机 N 客户端实测）
 1. Start 启动 → 客户端 A 建房 → 客户端 B 用 A 的名字建房/改名 → **重名拒绝**（两端都有提示）。
@@ -682,7 +682,7 @@ Windows 控制台程序，MSVC C++ 实现，三进程联机架构（完全复用
   - `NpcOnlineDecide(ctx)`：组装 prompt（身份、规则、当前阶段与信息、可选动作、历史），调 GLM-4.7-Flash API，解析回复返回动作行；失败/超时/繁忙**回退离线逻辑**（返回空串由调用方回退）。
   - 动作行格式（Server 直接消费）：`SPEECH|内容`、`VOTE|目标索引`（0=弃权）、`NIGHT_KILL|i`、`NIGHT_CHECK|i`、`NIGHT_SAVE|i`、`NIGHT_POISON|i`、`NIGHT_GUARD|i`、`NIGHT_SHOOT|i`、`NONE`。
   - 内置 100 名字表（英文规范命名，如 Alice/Bob 风格不重复）。
-- **API**：WinHTTP POST `https://open.bigmodel.cn/api/paas/v4/chat/completions`（模型 glm-4.7-flash），`Authorization: Bearer <key>`，key 默认 `698067a2633e4863a587fd029c0ae9fe.8rS6QIbcRMxatfeL`（用户提供，写入源码常量）。测试注入环境变量：`WOLF_NPC_API_URL`（默认官方地址，可指向本地假服务器测回退）、`WOLF_NPC_API_KEY`、`WOLF_NPC_TIMEOUT_SECONDS`（默认 15）、`WOLF_NPC_RETRIES`（默认 2）。繁忙可等待重试，全部失败回退离线。
+- **API**：WinHTTP POST `https://open.bigmodel.cn/api/paas/v4/chat/completions`（模型 glm-4.7-flash），`Authorization: Bearer <key>`。key 来源优先级：env `WOLF_NPC_API_KEY` > DPAPI 加密文件 `npc_key.bin` > 无 key（回退离线）；**key 不写死在源码与文档中**（需求 5.1）。测试注入环境变量：`WOLF_NPC_API_URL`（默认官方地址，可指向本地假服务器测回退）、`WOLF_NPC_API_KEY`、`WOLF_NPC_TIMEOUT_SECONDS`（默认 10）、`WOLF_NPC_RETRIES`（默认 1）。繁忙可等待重试，全部失败回退离线。
 - **集成（Server.cpp）**：识别 `npc`/`npc-off` 语言码标记玩家；NPC 玩家不建 socket、不进失联判定；夜晚对应职业阶段开始时立即生成决策并应用（不等输入）；白天发言阶段每个存活 NPC 至少发 1 次言（模板/模型生成，经白天发言广播通道）；投票必投；死亡触发遗言/猎人开枪决策。
 - NPC 发言语言：中文（默认）。
 
@@ -781,3 +781,81 @@ Windows 控制台程序，MSVC C++ 实现，三进程联机架构（完全复用
 8. 通配化简：BAN *** == BAN *；UNBAN *** 解除 *；`a?**` → `a*`；`*?*` → `*`。
 9. HELP：`HELP MUTE/UNMUTE/SHOW/ADD` 输出用法；HELP ANY 不回归；START /F 真实客户端（Client 进程模拟自动模式）强制开局成功。
 10. 回归：12 套既有脚本全部 PASS（PING 已适配），编译四端，更新文档，提交 GIT。
+
+## 21. 第十一轮：局外 @ / UNADD 移除 / 在线 NPC 决策 HTTP / NPC 记忆库（2026-08-10 用户批准，实施依据）
+
+> 状态：**已完成**（round11_test.ps1 37 项全 PASS）。详见 AGENTS.md 第十一轮记录。
+
+- 局外 @（房间聊天）：`@<名字或槽号> <内容>`——目标收「你被 X at了：内容」私发、发送者收「你at了 X」确认、广播原样含 @；命中 NPC 由 Start 代答。
+- UNADD（含短别名 UA）：移除 NPC/本地用户，真人请走 PICK；游戏期拒绝、结束后解锁；`UNADD *` 批量。
+- ADD NPC 重名/越权/批量校验。
+- 在线 NPC 游戏内决策走 HTTP（WOLF_NPC_API_URL/KEY/TIMEOUT 环境变量、retries=1、key 落盘 npc_key.bin、超时回退离线），白天决策前广播「AI 分析中」等待提示。
+- NPC 记忆库 npc_memory.txt（状态记忆，游戏局结束时落地）。
+
+## 22. 第十二轮：房内 NPC 聊天（@必答 + 普通接话相关性 + 在线/离线双模）（2026-08-11 用户批准，实施依据）
+
+> 状态：**已完成**（round12_test.ps1 17 项全 PASS）。详见 AGENTS.md 第十二轮记录。
+
+- 房内 @离线 NPC 必答：单次恰一条回复（修复重复发声）、多话题多样性（distinct ≥2）、词嵌入（回复含对方话题词）。
+- 房内普通聊天接话：名字出现 85%、游戏话题词 30%、纯闲聊 6%、普通接话 2s 限频、防自接话。
+- 多 NPC 同时在场：聊天同时含两人名 → 各按相关性接话。
+- 极端输入不崩：超长内容、纯标点、管道符注入、@ 不存在 NPC（只广播不代答）。
+- 在线 NPC 房内对话：Start 异步调大模型（独立线程），成功广播 AI 文本、失败回退离线模板；fake server 收 REQ 断言。
+
+## 23. 第十三轮：真实 AI 接入 / 离线 NPC 智能提升 / 槽位号回应 / 禁言 NPC 修复 / LEVEL3 新职业（2026-08-12 用户批准，实施依据）
+
+> 状态：**进行中**。用户指出：①在线 AI 并没有真的使用模型，须接入智谱国内开放 API 并用 GLM-4.7-Flash 真实推理；②离线 NPC 太弱智（缩写听不懂、过于沉默不主动发言、句式单一）；③文本出现「2号/1号」等槽位号且对应 NPC 槽位时 NPC 需要回复；④局内 NPC 同样智障需修复；⑤新增一个 LEVEL 档位并添加更多有趣职业；⑥NPC 被禁言后仍能说话（BUG）。
+
+### 23.1 BUG1：在线 AI 接入真实智谱 API（Server/Start 双端）
+- **服务**：智谱 BigModel 国内开放 API `https://open.bigmodel.cn/api/paas/v4/chat/completions`（OpenAI 兼容），模型 **glm-4.7-flash**（已有代码即用此端点与模型，本轮验证请求/响应兼容并确保真实可用）。
+- **请求体**：`{"model":"glm-4.7-flash","messages":[{"role":"system","content":...},{"role":"user","content":...}],"temperature":...}`。
+- **响应解析**：GLM 返回 `{"choices":[{"message":{"content":"..."}}]}`，NpcExtractAction/NpcExtractText 须正确提取（content 外层 JSON 转义已处理）。
+- **key 保护**（需求 5.1 强化）：key 不写死在源码；来源优先级 env `WOLF_NPC_API_KEY` > DPAPI 加密文件 `npc_key.bin` > 无 key（回退离线）。文档与 git 中不出现明文 key。
+- 模型名支持环境变量覆盖：`WOLF_NPC_MODEL`（默认 `glm-4.7-flash`），便于测试与将来换模型。
+- 验收：注入 `WOLF_NPC_API_URL` 指向本地假服务器时，收到请求体含 `"model":"glm-4.7-flash"` 与 `Authorization: Bearer` 头；解析 `{"choices":[{"message":{"content":"...动作..."}}]}` 形态正确出动作。
+
+### 23.2 BUG2：NPC 被禁言后仍能说话（Start.cpp 房内链路）
+- 现状：Start 房内 NPC 发言链路（NpcRoomSpeak / NpcRoomBroadcast / NpcRoomMaybeChat / NpcRoomOnlineReplyThread）完全没有查禁言名单；被禁言 NPC 在房内普通接话与被 @ 必答都照发。
+- 修复：房内 NPC 任何发言入口（含在线线程广播）先查 `IsMuted(room, npcName)`，命中则静默（不广播、不调模型、不占 2s 限频时间戳）；与真人被禁言行为一致。
+- 验收：MUTE NpcOne 后 @NpcOne 与普通聊天均无 NPC 回复行；UNMUTE 后恢复。
+
+### 23.3 离线 NPC 智能提升（缩写/槽位号/主动发言/句式多样/轻量相关性网络）
+- **缩写与别称**：玩家/NPC 名字的常见缩写（如 Bob→B、Alice→Al、中文取首字）在聊天中出现时，NPC 视同被提及，按被提及回应（`NpcMatchNickname` 已具备，房内/局内接话判定复用）。
+- **槽位号回应**：文本中出现 `N号`（如 `2号`、`1号`）且该编号对应某 NPC 槽位时，该 NPC 必须回复（视为 @ 命中）；真人槽位号出现时 NPC 按普通相关性接话。
+- **主动发言**：离线 NPC 不再完全沉默——房内场景下若超过一定时间（默认 45 秒，环境变量 `WOLF_NPC_PROACTIVE_MS` 注入可缩短）且 NPC 没说过话，主动抛一条话题发言（从当前房间聊天上下文/历史话题里取词，或纯闲聊模板）；局内白天发言节拍已覆盖。
+- **句式多样性**：各类模板从 8 变体扩到 12+ 变体；回复优先嵌入「相关性网络选出的最相关词/人名」，避免千篇一律。
+- **轻量本地相关性网络**（不引入外部库、纯 C++ 实现、体积小）：
+  - 输入：当前聊天文本 + 房内/局内玩家名 + NPC 名 + 场景事件词表 + 狼人杀词表；
+  - 特征化：词袋 → 哈希词嵌入向量（每个词映射到固定维向量）；
+  - 网络：单隐层感知机（输入层→隐层 ReLU→输出层 sigmoid），权重由预置语义先验初始化（狼人杀词、生活词、社交词、各名字相关权重），不训练；
+  - 输出：各 NPC 相关性分数，驱动接话概率与回复话题词选择；
+  - 嵌入支持：名字精确/缩写/槽位号 → 同一 NPC 特征向量。
+  - 验收：缩写触发回应、槽位号触发回应、话题词嵌入回复、主动发言可观测、句式 distinct 变体 ≥ 12（抽样 20 条）。
+- 轻量网络以 `NpcRelevanceScore` 统一入口，替代/增强现有 `NpcRoomRelevant` 的纯规则概率。
+
+### 23.4 局内 NPC 决策修复
+- 现状：局内 NPC 白天发言与夜晚行动基于规则+模板，但存在与真实玩家互动不足（不回应对方槽位号点名、不主动抛新话题、模板重复度高）。
+- 修复：
+  - 白天发言接话机制：`lastChat` 中出现自己名字/缩写/槽位号 → 按被提及回应（已具备，扩展缩写/槽位号）；
+  - 夜晚与投票决策支持槽位号线索（历史文本里「2号」「3号」点名与行动挂钩）；
+  - 发言模板进一步多样化；
+  - 预言家报验人、狼人刀人、投票目标选择与真实玩家发言的关联增强（复用 NpcPickSuspect/NpcVoteWeights）。
+- 验收：局内 NPC 白天发言 distinct 变体抽样 ≥ 12；@NPC 与「NPC 名/缩写/槽位号」提及均触发回应；游戏正常推进到结束。
+
+### 23.5 新增 LEVEL3（豪华加强）与新职业
+- **档位 3（豪华加强）**：档位 2 + 驯熊师、乌鸦、骑士（神职池扩充）+ 狼美人（狼池扩充）；LEVEL 命令参数范围 0..3。
+- **新职业（4 个，详见 common.h JOBS[]）**：
+  1. **驯熊师（bear）**：神职。每晚查验与自己在槽位上相邻的玩家中是否有狼；有狼则天亮时咆哮（所有玩家可见），无狼则安静。若当晚相邻玩家含狼且咆哮信息对好人极为关键。
+  2. **乌鸦（crow）**：神职。每晚可指定一名玩家，次日出票时该玩家多一票（污票），每夜可换人；无实体伤害，属信息/节奏干扰。
+  3. **骑士（knight）**：神职。白天投票阶段前可挑战一名玩家（每局限一次）：若目标是狼则其立即死亡并进入夜晚；若目标非狼则骑士自己死亡并进入夜晚。
+  4. **狼美人（wolfbeauty）**：狼阵营。夜晚随狼群行刀；被放逐/被狼刀身亡时（每局限一次）可带走一名玩家（魅惑殉情），与猎人开枪语义类似但限定死亡触发。
+- 职业池映射：LEVEL3 时神职候选追加 {bear, crow, knight}（每类最多 1 个）、狼池可含 1 个 wolfbeauty（与 whitewolf 二选一或并存，规则见实现注释）。
+- 夜晚/白天流程：
+  - 夜晚：驯熊师在守卫阶段后获知相邻狼情（自动信息，NPC 同）；乌鸦在预言家阶段后选目标（`night_crow` 动作行 `NIGHT_CROW|i|-1`）。
+  - 白天：骑士挑战（`CHALLENGE <槽号>`，`knight` 专属，投票前）；狼美人死亡触发带走（复用猎人开枪结算路径）。
+- NPC 决策支持：新增 `night_bear`（自动，无需输入）、`night_crow`、白天 `knight_challenge`、死亡 `wolfbeauty_take` 动作行。
+- HELP 职业介绍、FindJob 自动覆盖。
+- 验收：`LEVEL 3` 可设置；4 人局含新职业时 ROLE 下发正确、夜晚流程走通、胜负判定正常；骑士挑战、驯熊师咆哮、乌鸦污票、狼美人殉情各至少一次可观测（独立场景或组合场景）。
+
+### 23.6 验收与提交
+- tests/round13_test.ps1 覆盖 23.1-23.5 每个子需求；编译四端；既有 12 套脚本全回归 PASS；更新本文档状态行、§8 验收、AGENTS.md；git 提交（含 key 保护检查：仓库不含明文 key）。

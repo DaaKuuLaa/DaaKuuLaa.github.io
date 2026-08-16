@@ -108,10 +108,10 @@ while (-not $gameOver -and [DateTime]::Now -lt $deadline) {
                     $cl.w.WriteLine('PLAYER_' + $cl.k + '|1')
                 } elseif ($cl.role -eq 'witch') {
                     $cl.wolfRetry = $false
-                    # 第一次输入是解药：救被刀者（wolfTarget=第一个非狼存活，脚本全知）
-                    # 第二次输入是毒药：不用
-                    if ($cl.witchInputs -eq 0 -and $script:wolfTarget) {
-                        $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $script:wolfTarget)
+                    # 新协议：解药输入 1=救当夜狼刀目标、0=不救（不再是目标槽号，
+                    # 传槽号会被 "Enter 1 or 0." 拒掉重问）；第二次输入毒药 0=不用
+                    if ($cl.witchInputs -eq 0) {
+                        $cl.w.WriteLine('PLAYER_' + $cl.k + '|1')
                     } else {
                         $cl.w.WriteLine('PLAYER_' + $cl.k + '|0')
                     }

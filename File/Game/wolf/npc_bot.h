@@ -1316,7 +1316,7 @@ inline string NpcAtReply(const string& content = "")
 }
 
 // 被提及（未 @）时的回应模板：对方聊天行里直接出现了自己的名字，
-// 属于"被动点到"——同样要显得自己在线
+// 属于"被动点到"——同样要显得自己在线（§23.3 句式多样，扩到 12+ 变体）
 inline string NpcMentionedReply(const string& speaker)
 {
     static const char* const SV[] = {
@@ -1324,16 +1324,26 @@ inline string NpcMentionedReply(const string& speaker)
         "{x}聊到我了吗？那我插一句：目前我表态保持中立。",
         "听见{x}在说我，正好刷一下存在感：我在线。",
         "{x}刚说我？我这就来回应两句。",
+        "{x}点到我名了，行，那我把话说完。",
+        "既然{x}先开了口，我也不藏着，接着说。",
+        "我正想说话呢，{x}倒是把话头递过来了。",
+        "{x}这句话说到我心坎上了，我补充一下。",
+        "咱俩想到一块去了，{x}这说法我认同。",
+        "你既然问了{x}的事，我来讲讲我的视角。",
     };
     static const char* const GV[] = {
         "我好像被点名了，来听听大家怎么说。",
         "有人在讨论我，那就别客气，我加入一下。",
         "被讨论到了，我出来说句话，省得大家猜。",
+        "刚听到有人提到我，我这就冒个泡回应。",
+        "点名收到，我上线说两句。",
+        "别猜了，我自己来说：我这儿没什么可藏的。",
+        "我人在这呢，有什么直接问我。",
     };
 
-    if (!speaker.empty() && NpcRandChance(60)) return NpcReplacePh(SV[NpcRandInt(0, 3)], "{x}", speaker);
+    if (!speaker.empty() && NpcRandChance(60)) return NpcReplacePh(SV[NpcRandInt(0, 10)], "{x}", speaker);
 
-    return GV[NpcRandInt(0, 2)];
+    return GV[NpcRandInt(0, 7)];
 }
 
 // 投票宣言模板（8 变体随机）
@@ -1655,6 +1665,71 @@ inline string NpcHunterShot(const NpcContext& ctx, const vector<string>& lines, 
     return "NIGHT_SHOOT|" + to_string(ctx.targets[NpcRandInt(0, (int)ctx.targets.size() - 1)]);
 }
 
+// 乌鸦标记（§23.5）：夜里标记一名可疑目标，白天其投票权重 2。优先标
+// 嫌疑目标（查杀/可疑线索），否则随机标一个非自己存活玩家
+inline string NpcNightCrow(const NpcContext& ctx, const vector<string>& lines, int self)
+{
+    static const char* kws[] = { "查杀", "可疑", "怀疑" };
+    vector<int> cand;
+
+    NpcFindNameTargets(ctx, lines, kws, 3, cand);
+
+    vector<int> valid;
+
+    for (size_t j = 0; j < cand.size(); ++j)
+    {
+        if (cand[j] != self && NpcInTargets(ctx, cand[j])) valid.push_back(cand[j]);
+    }
+
+    if (!valid.empty())
+    {
+        return "NIGHT_CROW|" + to_string(valid[NpcRandInt(0, (int)valid.size() - 1)]);
+    }
+
+    if (ctx.targets.empty()) return "NIGHT_CROW|-1";
+
+    return "NIGHT_CROW|" + to_string(ctx.targets[NpcRandInt(0, (int)ctx.targets.size() - 1)]);
+}
+
+// 骑士挑战（§23.5）：白天投票前挑战。只对"高度怀疑的狼"才挑战（否则失败
+// 自己死），无把握时 0 不挑战。证据越强挑战概率越高，但要保留不挑战的选项
+inline string NpcKnightChallenge(const NpcContext& ctx, const vector<string>& lines, int self)
+{
+    static const char* kws[] = { "查杀", "狼人", "可疑", "怀疑" };
+    vector<int> cand;
+
+    NpcFindNameTargets(ctx, lines, kws, 4, cand);
+
+    vector<int> valid;
+
+    for (size_t j = 0; j < cand.size(); ++j)
+    {
+        if (cand[j] != self && NpcInTargets(ctx, cand[j])) valid.push_back(cand[j]);
+    }
+
+    // 有明确查杀线索才值得挑战（50% 概率）；证据不足时放弃（0），
+    // 避免骑士轻易自爆——失败即死亡，代价极高
+    if (!valid.empty() && NpcRandChance(50))
+    {
+        return "KNIGHT_CHALLENGE|" + to_string(valid[NpcRandInt(0, (int)valid.size() - 1)]);
+    }
+
+    return "KNIGHT_CHALLENGE|0";
+}
+
+// 狼美人殉情（§23.5）：死亡时带走一名玩家。优先带走"被好人反复提为狼/金水
+// 方向"的目标没意义——带走一个敌方神职更赚，但 NPC 信息有限，随机带走一名
+// 存活玩家即可（不带走自己的判断依赖）
+inline string NpcWolfBeautyTake(const NpcContext& ctx, const vector<string>& lines, int self)
+{
+    if (ctx.targets.empty()) return "WOLFBEAUTY_TAKE|0";
+
+    // 30% 不带走（保留悬念、避免无脑带人）
+    if (NpcRandChance(30)) return "WOLFBEAUTY_TAKE|0";
+
+    return "WOLFBEAUTY_TAKE|" + to_string(ctx.targets[NpcRandInt(0, (int)ctx.targets.size() - 1)]);
+}
+
 // 白天投票：证据与聊天线索折算成权重表随机（权重越高越可能被投），
 // base 2 保证必有候选、证据 +10/+6 让清狼方向大概率但不必然被投，
 // 保留 15% 弃权——全随机或从不弃权都显得不自然
@@ -1678,11 +1753,13 @@ inline string NpcDaySpeech(const NpcContext& ctx, const vector<string>& lines, i
 {
     if (!ctx.atTarget.empty()) return "SPEECH|" + NpcAtReply(ctx.atTarget);
 
-    // 未被 @ 但聊天里直接提到自己的名字：同样接话（发言里嵌发起者名字）
+    // 未被 @ 但聊天里直接提到自己的名字/缩写/槽位号：同样接话（发言里嵌
+    // 发起者名字）。NpcMatchNickname 覆盖缩写与「N号」槽位写法（§23.3）
     string selfName = NpcPlayerName(ctx, self);
 
     if (!ctx.lastChat.empty() && selfName.size() >= 2 &&
-        ctx.lastChat.find(selfName) != string::npos)
+        (ctx.lastChat.find(selfName) != string::npos ||
+         NpcMatchNickname(ctx.lastChat, selfName, self)))
     {
         return "SPEECH|" + NpcMentionedReply(NpcLastSpeaker(ctx.lastChat));
     }
@@ -1751,6 +1828,8 @@ inline string NpcLastword(const NpcContext& ctx, const vector<string>& lines, in
 inline string NpcRoomReplyOffline(const string& npcName, const string& senderName,
                                   const string& content, bool atHit)
 {
+    // @ 必答模板 14 变体（§23.3 句式多样）：一半嵌 {x}（对方内容里的词），
+    // 一半纯回应，保证连续被 @ 不会复读同一句式
     static const char* const AV[] = {
         "嗯？@我什么事",
         "我觉得{x}有道理，细讲讲？",
@@ -1760,6 +1839,12 @@ inline string NpcRoomReplyOffline(const string& npcName, const string& senderNam
         "说到{x}我就有兴趣了，展开说说？",
         "@我看什么，直接说重点嘛",
         "这个点我再琢磨琢磨，晚点回你",
+        "好嘞，{x}这个角度我记下了。",
+        "被点名了，我表态：{x}先放观察位。",
+        "你这句话点醒我了，{x}值得再挖。",
+        "得，既然提到{x}，我把我的看法说完。",
+        "嗯嗯，这个我同意，{x}那边也是同理。",
+        "我先不急着定调，{x}这事再看一轮。",
     };
     static const char* const NV[] = {
         "你们聊，我搭个话，{x}这个话题我有印象。",
@@ -1768,6 +1853,11 @@ inline string NpcRoomReplyOffline(const string& npcName, const string& senderNam
         "光听不说多没意思，我支持{x}的讨论。",
         "先插一嘴：{x}这事有后续了记得喊我。",
         "我在这边听着呢，{x}展开讲讲？",
+        "{x}你们不聊我都要忘了，确实值得一说。",
+        "刚洗完杯水回来，{x}讲到哪一步了？",
+        "我对{x}其实有点想法，晚点细说。",
+        "顺着{x}往下聊，我有几句话想说。",
+        "这个{x}，我怎么感觉你们说得还不够深。",
     };
     static const char* const GV[] = {
         "哈哈，房间里的气氛不错，我围观一下。",
@@ -1775,28 +1865,66 @@ inline string NpcRoomReplyOffline(const string& npcName, const string& senderNam
         "我先冒个泡，你们继续。",
         "这话题我能接，不过想再听几句再表态。",
         "路过围观，不用管我，你们聊你们的。",
+        "蹲一个结论，我先记下大家的看法。",
+        "插不上话，但我全程都在。",
+        "你们聊得真起劲，我有空也来一嘴。",
     };
 
     string w = NpcPickWord(content);
 
     if (atHit)
     {
-        if (w.empty()) return AV[0 + NpcRandInt(0, 4)];
+        // 无词可嵌时用纯回应模板（GV 无 {x} 占位），避免留出「我觉得 有道理」
+        // 这类空洞句式
+        if (w.empty()) return GV[NpcRandInt(0, 7)];
 
-        return NpcReplacePh(AV[NpcRandInt(0, 7)], "{x}", w);
+        return NpcReplacePh(AV[NpcRandInt(0, 13)], "{x}", w);
     }
 
     if (!senderName.empty() && NpcRandChance(40))
     {
-        return NpcReplacePh(NV[NpcRandInt(0, 5)], "{x}", senderName);
+        return NpcReplacePh(NV[NpcRandInt(0, 10)], "{x}", senderName);
     }
 
     if (!w.empty() && NpcRandChance(40))
     {
-        return NpcReplacePh(NV[NpcRandInt(0, 5)], "{x}", w);
+        return NpcReplacePh(NV[NpcRandInt(0, 10)], "{x}", w);
     }
 
-    return GV[NpcRandInt(0, 4)];
+    return GV[NpcRandInt(0, 7)];
+}
+
+// 主动发言模板（§23.3）：房内冷场超时后 NPC 主动抛话题，不再完全沉默。
+// topic 为从最近聊天提取的话题词（可空），空则用纯闲聊模板；9 变体随机，
+// 话题词存在时嵌入其中 6 种，让发言有"接着聊"的感觉而不是干巴巴复读
+inline string NpcProactiveLine(const string& topic, const string& selfName)
+{
+    static const char* const TV[] = {
+        "我来抛个话题：{tp}你们怎么看？",
+        "刚想到{tp}这茬，大家有了解的吗？",
+        "房间安静好久了，聊聊{tp}？",
+        "其实我一直在想{tp}这件事，谁先说说？",
+        "{tp}这个话题挺有意思，我起个头。",
+        "我有点好奇{tp}，你们谁懂行？",
+    };
+    static const char* const SV[] = {
+        "没人说话吗？那我先来：你们今天都咋样？",
+        "好安静啊，都去打狼人杀了？",
+        "我冒个泡，有人想开下一局吗？",
+        "刚处理完点事，房间还有人吗？",
+        "来都来了，谁陪我唠两句？",
+        "发个呆，等一个话题。",
+        "悄咪咪问一句：有人在线吗？",
+        "我热个场子，大家别都潜水呀。",
+        "房间里就剩空气了，我来说句话暖暖场。",
+    };
+
+    if (!topic.empty() && NpcRandChance(70))
+    {
+        return NpcReplacePh(TV[NpcRandInt(0, 5)], "{tp}", topic);
+    }
+
+    return SV[NpcRandInt(0, 9)];
 }
 
 // 在线对话调用结果：ok=拿到回复文本；text=发言（已限长净化）
@@ -1832,6 +1960,9 @@ inline string NpcOfflineDecide(const NpcContext& ctx)
     if (phase == "night_save") return NpcNightSave(ctx, lines, self);
     if (phase == "night_poison") return NpcNightPoison(ctx, lines, self);
     if (phase == "night_guard") return NpcNightGuard(ctx, lines, self);
+    if (phase == "night_crow") return NpcNightCrow(ctx, lines, self);
+    if (phase == "knight_challenge") return NpcKnightChallenge(ctx, lines, self);
+    if (phase == "wolfbeauty_take") return NpcWolfBeautyTake(ctx, lines, self);
     if (phase == "hunter_shot" || phase == "hunter_shoot") return NpcHunterShot(ctx, lines, self);
     if (phase == "day_vote") return NpcDayVote(ctx, lines, self);
     if (phase == "day_speech") return NpcDaySpeech(ctx, lines, self);
@@ -2438,6 +2569,145 @@ inline string NpcExtractText(const string& resp)
     if (inner.size() > 80) inner = inner.substr(0, 80);
 
     return inner;
+}
+
+// ============ 本地轻量相关性网络（§23.3） ============
+// 调用 npc_nn_server.py（Python + numpy 小网络）给"聊天文本 → 各 NPC 相关性
+// 分数 + 话题词"打分。失败（服务没起/超时/解析异常）返回 false，调用方回退
+// 内置规则，保证 Python 不存在时 NPC 行为完全正常——在线 AI 同款容错哲学。
+// URL/超时用环境变量注入便于测试与部署（WOLF_NPC_NN_URL / WOLF_NPC_NN_TIMEOUT_SECONDS）
+struct NpcNeuralResult
+{
+    bool ok;
+    map<string, double> scores;  // 全部 NPC 名 → 相关性分数 0..1（网络 sigmoid + 名字命中加成）
+    string topic;   // 最相关话题词（供回复嵌入，可能为空）
+};
+
+inline NpcNeuralResult NpcNeuralScore(const vector<string>& npcNames,
+                                      const vector<string>& playerNames,
+                                      const string& text,
+                                      const vector<string>& context)
+{
+    NpcNeuralResult r;
+
+    r.ok = false;
+
+    string url = NpcEnvOr("WOLF_NPC_NN_URL", "http://127.0.0.1:18083/score");
+
+    if (url.empty()) return r;
+
+    int timeoutSec = NpcEnvInt("WOLF_NPC_NN_TIMEOUT_SECONDS", 1, 1, 5);
+
+    // 组装 JSON：npcs/names/context 各自拼数组字面量（名字都经 NpcJsonEscape 防注入）
+    string npcsArr = "[";
+
+    for (size_t i = 0; i < npcNames.size(); ++i)
+    {
+        if (i) npcsArr += ",";
+
+        npcsArr += "\"" + NpcJsonEscape(npcNames[i]) + "\"";
+    }
+
+    npcsArr += "]";
+
+    string namesArr = "[";
+
+    for (size_t i = 0; i < playerNames.size(); ++i)
+    {
+        if (i) namesArr += ",";
+
+        namesArr += "\"" + NpcJsonEscape(playerNames[i]) + "\"";
+    }
+
+    namesArr += "]";
+
+    string ctxArr = "[";
+
+    for (size_t i = 0; i < context.size(); ++i)
+    {
+        if (i) ctxArr += ",";
+
+        ctxArr += "\"" + NpcJsonEscape(context[i]) + "\"";
+    }
+
+    ctxArr += "]";
+
+    string body = "{\"text\":\"" + NpcJsonEscape(text) + "\",\"npcs\":" + npcsArr
+        + ",\"names\":" + namesArr + ",\"context\":" + ctxArr + "}";
+    string headers = "Content-Type: application/json";
+
+    NpcHttpResult hr = NpcHttpOnce(url, headers, body, timeoutSec);
+
+    if (!hr.ok) return r;
+
+    // 解析 {"scores":{"<名>":<分数>,...},"topic":"<话题>"}：遍历 scores 对象，
+    // 逐个名字键取分数进 map。只取本次请求的 npcNames（避免把别的名字也带回）
+    size_t sc = hr.body.find("\"scores\"");
+
+    if (sc == string::npos) return r;
+
+    size_t objOpen = hr.body.find('{', sc);
+
+    if (objOpen == string::npos) return r;
+
+    size_t objClose = hr.body.find('}', objOpen + 1);
+
+    if (objClose == string::npos) return r;
+
+    string scoresObj = hr.body.substr(objOpen + 1, objClose - objOpen - 1);
+
+    bool gotAny = false;
+
+    for (const string& nm : npcNames)
+    {
+        if (nm.empty()) continue;
+
+        string nameKey = "\"" + NpcJsonEscape(nm) + "\"";
+        size_t p = scoresObj.find(nameKey);
+
+        if (p == string::npos) continue;
+
+        size_t colon = scoresObj.find(':', p + nameKey.size());
+
+        if (colon == string::npos) continue;
+
+        size_t q = colon + 1;
+
+        while (q < scoresObj.size() && (scoresObj[q] == ' ' || scoresObj[q] == '\t')) ++q;
+
+        char* endp = nullptr;
+
+        double v = strtod(scoresObj.c_str() + q, &endp);
+
+        if (endp != scoresObj.c_str() + q && v >= 0.0 && v <= 1.01)
+        {
+            r.scores[nm] = v;
+
+            gotAny = true;
+        }
+    }
+
+    if (!gotAny) return r;
+
+    r.ok = true;
+
+    size_t tk = hr.body.find("\"topic\"");
+
+    if (tk != string::npos)
+    {
+        size_t colon = hr.body.find(':', tk + 7);
+
+        if (colon != string::npos)
+        {
+            string t = NpcJsonReadString(hr.body, colon);
+
+            if (t.size() > 12) t = t.substr(0, 12);
+
+            r.topic = t;
+        }
+    }
+
+    return r;
 }
 
 #endif // WOLF_NPC_BOT_H

@@ -2,7 +2,7 @@
 
 联网控制台版狼人杀 C++ 项目。源码：`Start.cpp`（房间管理器）/ `Server.cpp`（单局服务器）/ `Client.cpp`（客户端）/ `common.h`（共享协议与职业表），测试脚本在 `tests/`。狼人杀复用了 `reference/demon/`（恶魔轮盘，已完成的参考项目）已验证的架构、协议思路和所有已修复的坑。
 
-> 当前状态：**第十一、十二轮验收完成**。第十一轮（round11_test.ps1 37 项全 PASS）：在线 NPC 游戏内决策走 HTTP（WOLF_NPC_API_URL/KEY/TIMEOUT 环境变量、retries=1、key 落盘 npc_key.bin、超时回退离线）+ 房内 @/聊天；第十二轮（round12_test.ps1 17 项全 PASS）：离线 NPC 房内聊天（@ 必答恰一条、相关性接话 名字 85%/话题词 30%/纯闲聊 6%、2s 限频、多话题词嵌入、极端输入不崩）+ 在线 NPC 房内对话（fake_chat HTTP 响应「AI房内回话」广播、无 key 回退离线模板、超时快速兜底）。**本轮修复**：NpcExtractText 对 8 字符 `"reply"` 键的 k+9 偏移错位导致 AI 文本解析成整段兜底（改 `find(':', k)`）；NpcOnlineRoomChat 重试默认 0→1（本机 WinHTTP↔PowerShell TcpListener 环回偶发 EOF/12030，重试兜底）；fake server/chat 本机冷启动 ~15s 才就绪（脚本加 25s 就绪探针）；stdout 重定向块缓冲致 REQ 不落盘（改用 AppendAllText 日志 fake_server_log.txt/fake_chat_log.txt）；Get-NetTCPConnection 对 Loopback 监听不可靠（按 PID 文件 fake_chat.pid/npc_fake_server.pid 清理残留）；round11 S3 段女巫毒杀+狼杀首夜屠神导致无白天（关毒杀保证白天 1 必到）；R2-2 概率断言 5 试→10 试（0.7^5≈16.8% 偶发假 FAIL）。Start.cpp 探针日志（NPC-ONLINE-REQ/RES）与 NpcRoomMaybeChat 的 @ 必答不再重复触发，保留。第十轮及其之前均已实现并通过 tests/ 脚本。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
+> 当前状态：**第十三轮验收完成（§23）**。round13_test.ps1 34 项全 PASS：在线 AI 接入（智谱 glm-4.7-flash、fake_ai 验证 Authorization: Bearer + key 落盘 npc_key.bin DPAPI 加密 + 无 key/超时回退离线）+ 离线 NPC 智能提升（槽位号/缩写提及必答、模板扩到 14+ 变体、主动发言 WOLF_NPC_PROACTIVE_MS）+ 禁言 NPC 修复（MUTE 后 @ 不广播）+ 局内 NPC 修复（白天被 @ 接话）+ LEVEL3 新职业（bear 驯熊师/crow 乌鸦/knight 骑士/wolfbeauty 狼美人：ROLE/夜晚/胜负/挑战/咆哮/污票/殉情全走通）。**本轮修复**：round12 崩溃根因 = `NpcRandInt(lo,hi)` 闭区间含 hi，而模板数组索引写成 `Arr[NpcRandInt(0,N)]` 对 N 元素越界（AV 14 个用 0..14、NV 11 个用 0..11、GV 8 个用 0..8、TV 6 个用 0..6，共 6 处）→ 越界读返回相邻数组垃圾指针 → 全局堆损坏、延迟到 map/vector 操作崩溃（Start.cpp offset 0x719B0 = vector<bool>::size()，R2 段第 2 次 @ 触发）；round11/12/13 Start-RM 加 TCP 就绪探针（本机负载高时 Start 2s 内未完成监听，S1/S4 段偶发 Connect 8888 被拒）；round3/server_test/server_test8 女巫解药协议改 `1`（旧脚本按目标槽号发会被 "Enter 1 or 0." 拒掉重问 → 首夜不救 + 狼刀随机屠边时白天不到）；round12 R5-1 在线回复断言超时 6000→12000（retries=1 最坏 3s+2s+3s=8s）；Start.cpp 加 CrashDumpHandler（写 crash.log 含 code/addr/mod/offset，绕开 cout 缓冲坑 20，崩溃排查利器，保留）。**回归**：16 套脚本全 PASS（proto/server/server_test8/pen/speech/round3~round13）。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
 
 ## 工作目录铁律（最重要）
 
@@ -60,7 +60,7 @@
 
 **游戏链路（真实协议）**：Start 开局时给每个已连接槽位分配 **gamePid=压缩名单序号 1..N**（槽位升序跳过未连接槽，Slot.gamePid 记录）并存入槽位；命令行按同序传 Server.exe，`GAME_PREPARE|port|roomId|ip|gamePid` 下发；客户端**直连游戏端口**并发 `PLAYER_ID|<gamePid>` 认领槽位（Server 的 playerId=名单位置 1..N，与 gamePid 一致——**槽位空洞时 GAME_PREPARE pid 必须用 gamePid 而非槽号+1**，否则张冠李戴）；开局广播 `PLAYER_LIST|<总数>|<名1>|...|<名N>`（名字=槽位序、含玩家总数头字段，Client 解析必须跳过头字段）。游戏内其他协议：`PING`（心跳保活行，Server 收到只刷新 lastSeen 并回一行 PING）、`GAME_ENDED|<roomId>`（Server 通知本局结束）、`RELEASE|<roomId>`（全部玩家失联时 Server 通知销毁房间、清空黑名单）、`__GAME_OVER__`（Server 收尾关连接前发的终态裸行，客户端据此判定「本局正常结束」直接回房、不进入重连流程）、`ROLE|<职业enName>`（身份私信）、`__DAY_OPEN__`/`__INPUT__`/`__CLS__`/`__PAUSE__` 等控制消息。`REJOIN|<roomId>|<playerId>` 的 playerId=开局分配的 gamePid：Start 按 `slots[i].gamePid == pid` 匹配回**原槽位**（含空洞局），匹配失败才回落空槽（不含槽 0）；房主保护 hostPid=1（槽 0 恒为名单首位）。兜底回滚（`WOLF_GAME_WAIT_SECONDS` 注入）只对「Server.exe 进程已死」生效——进程活着时房间保持 [游戏中]，善后交给 Server 自身 25s 开局超时 RELEASE。
 
-## 测试（tests/ 十五套自动化脚本，全部 PASS）
+## 测试（tests/ 十六套自动化脚本，全部 PASS）
 
 - `tests/proto_test.ps1` — **60 项**协议级验收：房主流程 / 转移房主 / PICK+禁入 / 职业配置 / 比例 / START / AUTO / BAN-UNBAN / IP 黑名单 / 名字规则 / GAME_ENDED+REJOIN 回房等。
 - `tests/server_test.ps1` — **5 项** 4 人直连局（1 狼 + 0 中立 + 2 神 + 村民开，完整昼夜循环走通）。
@@ -78,6 +78,7 @@
 - `tests/round10_test.ps1` — **23 项**第十轮验收（A 女巫救/毒流程与屠边、B 丘比特/盗贼情报保密、D 房内 MUTE/UNMUTE/SHOW/通配化简、E 游戏内禁言传递）。
 - `tests/round11_test.ps1` — **37 项**第十一轮验收（S1 ADD/UNADD NPC 与重名/越权/批量、S2 6 人局 NPC 全流程昼夜、S3 API：在线 NPC 白天决策「AI 分析中」等待提示 + fake server 收到 REQ + key 落盘 npc_key.bin + 无 env key 从文件恢复 + 超时回退离线、S4 @NPC 房内对话在线路径）。round11 修复：S3 段女巫毒杀关停保证白天必到、fake server 25s 就绪探针、fake_server_log.txt AppendAllText 落盘 + npc_fake_server.pid 按 PID 清理、R2-2 话题断言 5→10 试。
 - `tests/round12_test.ps1` — **17 项**第十二轮验收（R1 房内 @离线 NPC 必答：单次恰一条/多样性/词嵌入；R2 普通聊天相关性：名字 85% 6试/话题词 30% 10试/纯闲聊 6% 上限 5 次；R3 两人名接话；R4 极端输入：超长/纯标点/管道注入/@不存在/进程存活；R5 在线 NPC 房内 @：AI 文本广播 + fake_chat 收到 REQ（重试兜底）+ NpcExtractText 干净解析；R6 无 key 回退离线；R7 短超时快速兜底；R8 单次 @ 恰一条回复无重复发声）。
+- `tests/round13_test.ps1` — **34 项**第十三轮验收（§23：T1/T2 在线 AI 接入与失败回退离线（fake_ai 验证 Authorization: Bearer + glm-4.7-flash 模型串）；T3/T4 槽位号/缩写提及必答；T5 禁言 NPC 修复；T6 主动发言（WOLF_NPC_PROACTIVE_MS）；T7 模板多样 distinct≥12；T8 局内白天被 @ 接话；T9 在线游戏内决策 HTTP；T10/T11 LEVEL3 设置与 4 人局（ROLE/夜晚/胜负/__GAME_OVER__，seed 1..15 扫描）；T12-T15 驯熊师咆哮、骑士挑战、狼美人殉情、乌鸦污票可观测）。
 
 运行方式（串行执行，输出文件仅作参考，以脚本 **exit code** 为准）：
 `powershell -NoProfile -ExecutionPolicy Bypass -File tests\xxx.ps1 *> tests\xxx_out.txt`
@@ -119,6 +120,10 @@
 31. **白天投票必须按「白天发言阶段」重置（round9 C11 白天 2 卡死根因）**：投票标志白天 1 投过就永久 true，白天 2 起真人 bot 不再投票 → `GatherDayVotes` 等剩余票直到超时 → 无 `__GAME_OVER__`。**修复：每次收到「白天发言阶段」广播把已投标志置 false**（该广播每白天恰一次，是天然阶段同步点）；白天投票不经 `__INPUT__`（白天只开 `__DAY_OPEN__`），按横幅触发集中发 `PLAYER_k|VOTE|0`。
 32. **Start-Process 子进程输出是 UTF-8 无 BOM，不是主脚本 `*> 重定向` 的 UTF-16LE（round9 F3 FAIL 根因）**：npc_fake_server.ps1 由 Start-Process -RedirectStandardOutput 拉起，stdout 走子进程管道编码（UTF-8 无 BOM），主脚本按 `[Text.Encoding]::Unicode` 读全乱码 → `Contains('REQ:')` 恒假 → **读子进程输出必须先看字节头：FF FE → Unicode，否则按 UTF-8**（与踩坑 20 主进程重定向场景相反）。
 33. **Server 必须全槽位连上才开局（round9 D8 FAIL 根因）**：`WaitForGameStart` 等**所有**压缩名单槽位连好才广播 `PLAYER_LIST`。D 段真人 socket 收 GAME_PREPARE 即关（不连游戏端口），本地用户窗口自动连 3/4 位，1/2 空槽无人 → 永远等 → 25s RELEASE。**验证「本地用户自动连游戏端口」时，脚本必须自己补连空槽（`PLAYER_ID|k` 填上 1/2）+ 每 1s PING 保活**，否则 PLAYER_LIST 永不广播。
+34. **NpcRandInt 闭区间数组越界（round12 崩溃根因）**：`NpcRandInt(lo,hi)` 用 `uniform_int_distribution(lo,hi)` **含 hi**。模板数组索引必须写 `Arr[NpcRandInt(0, N-1)]`（N=元素数）；写成 `NpcRandInt(0, N)` 对 N 元素越界读相邻静态数组的垃圾指针 → 返回垃圾串 → 全局堆损坏 → 延迟到无关的 map/vector 操作崩溃（round12 R2 段第 2 次 @ 时 Start.cpp RVA 0x719B0 = `std::vector<bool>::size()`）。**修数组索引一律上界-1；改动模板数组数量后必须同步索引**。
+35. **女巫解药协议是 1/0 不是槽号（round3 6.5-6.7 假失败根因）**：Server 的 witch 解药提示「Use the antidote? (1 = yes, 0 = no)」——**输入 1=救当夜狼刀目标、0=不救**。旧脚本发目标槽号会被拒重问 → 首夜不救 → 4 人局狼刀恰选村民时屠民狼胜、白天不到（角色随机 1/3 概率假 FAIL）。**round3/server_test/server_test8 的 witch 解药分支统一发 `PLAYER_k|1`**。
+36. **Start-RM 无就绪探针（round11 S1/S4 段偶发 8888 拒连）**：Start-Process 后 Start-Sleep 2s，本机负载高时 Start 未完成监听 → Connect 被拒、整段 FAIL。**Start-RM 必须加 TCP 就绪探针**（连接成功才继续，round11/12/13 已加）。
+37. **round12 R5-1 断言窗口 6s < 在线最坏 8s**：NpcOnlineRoomChat retries=1 时最坏 3s 超时 + 2s 重试间隔 + 3s 超时 = 8s，RecvUntilStream 6000 偶发超时。**在线断言窗口按 retries 最坏路径给足（12000）**。
 
 ## 需求规格（狼人杀版，作为验收依据）
 

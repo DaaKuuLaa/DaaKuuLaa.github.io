@@ -76,7 +76,20 @@ function Start-RM([int]$port = 8888) {
     Remove-Item "$wolf\start.log" -ErrorAction SilentlyContinue
     $env:WOLF_VOTE_TIMEOUT_SECONDS = '6'
     $proc = Start-Process -FilePath "$wolf\Start.exe" -WorkingDirectory $wolf -ArgumentList @('8888') -WindowStyle Hidden -PassThru -RedirectStandardOutput "$wolf\start.log"
-    Start-Sleep -Seconds 2
+    # 就绪探针：本机负载高时 Start 可能 2s 内未完成监听（偶发 Connect 被拒）
+    $ready = $false
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Milliseconds 500
+        if ($proc.HasExited) { break }
+        try {
+            $t = New-Object Net.Sockets.TcpClient
+            $t.Connect('127.0.0.1', $port)
+            $t.Close()
+            $ready = $true
+            break
+        } catch { }
+    }
+    if (-not $ready) { Write-Output 'WARN: Start-RM 就绪探针超时，Start 未监听' }
     return $proc
 }
 
@@ -436,7 +449,7 @@ try {
     Add-Npc $R5 'NpcAI' 'on'
     foreach ($cl in $R5.room) { Drain-Lines $cl 400 }
     SendLine $R5.room[0] '@NpcAI 你怎么看'
-    $r = RecvUntilStream $R5.room[1].s 'NpcAI：' 6000
+    $r = RecvUntilStream $R5.room[1].s 'NpcAI：' 12000
     # 断言必须同时匹配 AI 文本本身：只匹配 "NpcAI：" 会把离线兜底模板当成
     # 在线成功（假 PASS，R5-1 曾因此掩盖 R5-2 失败）
     Check 'R5-1 在线 NPC 房内 @ 有回复（AI 文本广播）' ($r -ne $null -and $r -match 'NpcAI：AI房内回话')

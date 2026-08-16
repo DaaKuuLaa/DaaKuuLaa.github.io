@@ -236,10 +236,10 @@ function Run-Game($port, $rmName, $scenario, $level, $langCode) {
                             $t = Get-SeerTarget ($cl.k)
                             if ($t -gt 0) { $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $t) }
                         } elseif ($cl.role -eq 'witch') {
-                            # 第一次输入是解药（救狼刀目标保平安夜），第二次是毒药（不用）
+                            # 新协议：解药输入 1=救当夜狼刀目标、0=不救（不再是目标槽号，
+                            # 传槽号会被 "Enter 1 or 0." 拒掉重问）；第二次输入毒药 0=不用
                             if ($cl.witchInputs -eq 0) {
-                                $t = Get-WolfTarget
-                                if ($t -gt 0) { $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $t) }
+                                $cl.w.WriteLine('PLAYER_' + $cl.k + '|1')
                             } else {
                                 $cl.w.WriteLine('PLAYER_' + $cl.k + '|0')
                             }

@@ -67,7 +67,21 @@ function Start-RM([int]$port = 8888) {
     Remove-Item "$wolf\start.log" -ErrorAction SilentlyContinue
     $env:WOLF_VOTE_TIMEOUT_SECONDS = '6'
     $proc = Start-Process -FilePath "$wolf\Start.exe" -WorkingDirectory $wolf -ArgumentList @('8888') -WindowStyle Hidden -PassThru -RedirectStandardOutput "$wolf\start.log"
-    Start-Sleep -Seconds 2
+    # 就绪探针：本机负载高时 Start 可能 2s 内未完成监听（S1/S4 段偶发
+    # Connect 127.0.0.1:8888 被拒），连接成功才继续
+    $ready = $false
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Milliseconds 500
+        if ($proc.HasExited) { break }
+        try {
+            $t = New-Object Net.Sockets.TcpClient
+            $t.Connect('127.0.0.1', $port)
+            $t.Close()
+            $ready = $true
+            break
+        } catch { }
+    }
+    if (-not $ready) { Write-Output 'WARN: Start-RM 就绪探针超时，Start 未监听' }
     return $proc
 }
 

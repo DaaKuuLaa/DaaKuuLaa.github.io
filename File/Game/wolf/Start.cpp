@@ -320,6 +320,8 @@ struct Room
     deque<string> roomChat;         // 房内最近聊天（含 NPC 发言，限 20 条；NPC 相关性接话
                                     // 判断的上下文，随房间生命周期自然清除，§22）
     map<string, ULONGLONG> npcChatTs; // NPC 名→上次普通接话 tick（防刷屏，普通接话 2s 间隔）
+    ULONGLONG lastHumanChatTs;        // 最后真人房内聊天 tick（主动发言判定用，§23.3）
+    ULONGLONG lastProactiveTs;        // 上次 NPC 主动发言 tick（防连发，§23.3）
     mutable mutex chatMutex;        // 保护 roomChat/npcChatTs：在线 NPC 回复线程与连接线程
                                     // 并发访问的细粒度锁（锁序: 房间锁→chatMutex，无反向）
 
@@ -330,7 +332,7 @@ struct Room
           ratioW(0), ratioN(0), ratioG(0),
           banUntil(0), needConfirm(false),
           confirmW(0), confirmN(0), confirmG(0),
-          autoStart(false)
+          autoStart(false), lastHumanChatTs(0), lastProactiveTs(0)
     {
         slots.resize(MAX_PLAYERS);
     }
@@ -870,6 +872,57 @@ int ParseAtTarget(Room* room, const string& chat, int selfSlot)
     return hit;
 }
 
+// 槽位号提及解析（§23.3）：房内聊天出现「N号」/「第N号」且 N 对应房内非空
+// 槽位时返回该槽下标（0 基）；纯数字 token 也接受。与局外 @ 不同，这里不要求
+// @ 前缀——玩家直接喊「2号 你说是谁」时 2 号位的 NPC 必须应答
+int ParseRoomSlotMention(Room* room, const string& chat)
+{
+    if (!room || chat.empty()) return -1;
+
+    size_t i = 0;
+
+    while (i < chat.size())
+    {
+        if (!isdigit((unsigned char)chat[i]))
+        {
+            ++i;
+            continue;
+        }
+
+        size_t j = i;
+
+        while (j < chat.size() && isdigit((unsigned char)chat[j])) ++j;
+
+        string numStr = chat.substr(i, j - i);
+
+        bool hasHao = (j < chat.size() && chat[j] == '号');
+
+        bool standalone = true;
+
+        if (i > 0 && (isalnum((unsigned char)chat[i - 1]) || chat[i - 1] == '_')) standalone = false;
+
+        if (j < chat.size() && (isalnum((unsigned char)chat[j]) || chat[j] == '_')) standalone = false;
+
+        if (hasHao || standalone)
+        {
+            int num = atoi(numStr.c_str());
+
+            if (num >= 1 && num <= MAX_PLAYERS && !room->slots[num - 1].name.empty())
+            {
+                return num - 1;
+            }
+        }
+
+        i = j;
+    }
+
+    return -1;
+}
+
+// 前置声明：定义在房内 NPC 发言工具之后（1098 行附近），此处先声明以便
+// NpcRoomBroadcast/NpcRoomSpeak 的禁言拦截使用（§23.2）
+bool IsMuted(Room* room, const string& name);
+
 // 房内 NPC 发言工具（§22）：NPC 无大厅连接，回复一律 INVALID_SOCKET 全员
 // 广播——普通聊天广播排除发送者，但"对方回你话要让你看见"，故 NPC 回复
 // 的排除不能带原发送者。全部发言（含在线线程的 AI 回复）都进 roomChat，
@@ -877,6 +930,10 @@ int ParseAtTarget(Room* room, const string& chat, int selfSlot)
 //（在线回复线程与连接线程并发访问），锁序永远 房间锁→chatMutex
 void NpcRoomBroadcast(Room* room, const string& npcName, const string& text, ULONGLONG nowTs)
 {
+    // 在线回复线程是异步路径，广播前再查一次禁言：speak 时未禁言、但 HTTP
+    // 往返期间被 MUTE 的窗口不能漏（§23.2）。离线同步路径 NpcRoomSpeak 已拦
+    if (!room || IsMuted(room, npcName)) return;
+
     string sanitized = SanitizeChat(text);
 
     if (sanitized.empty()) return;
@@ -929,6 +986,10 @@ void NpcRoomSpeak(Room* room, const string& npcName, bool npcOnline,
 {
     if (!room) return;
 
+    // 禁言铁律与真人一致：被禁言 NPC 任何发言（含 @ 必答）一律静默，不广播、
+    // 不调模型、不占 2s 限频时间戳；解除禁言后自动恢复（§23.2）
+    if (IsMuted(room, npcName)) return;
+
     if (!atHit)
     {
         ULONGLONG nowTs = GetTickCount64();
@@ -968,6 +1029,95 @@ bool NpcRoomRelevant(Room* room, int npcSlot, const string& chat, bool& nameHit,
 
     const string& nm = room->slots[npcSlot].name;
 
+    // 轻量相关性网络（§23.3）：同一 chat 对多个 NPC 依次判定时只打一次 HTTP——
+    // 用 chat+房间名做缓存指纹，命中直接复用分数表与话题词。网络不可用（服务
+    // 没起）时 ok=false，自动回退下方内置规则
+    static string s_cacheKey;
+    static bool s_cacheOk = false;
+    static map<string, double> s_cacheScores;
+    static string s_cacheTopic;
+
+    string cacheKey = room->roomId + "|" + chat;
+
+    if (cacheKey != s_cacheKey)
+    {
+        // 收集房内所有玩家名字（真人+NPC），供网络做名字/缩写相关性
+        vector<string> npcs;
+        vector<string> names;
+
+        for (int i = 0; i < MAX_PLAYERS; ++i)
+        {
+            if (room->slots[i].name.empty()) continue;
+
+            if (room->slots[i].isNpc) npcs.push_back(room->slots[i].name);
+
+            else names.push_back(room->slots[i].name);
+        }
+
+        vector<string> ctx;
+
+        {
+            lock_guard<mutex> lk(room->chatMutex);
+
+            for (const string& s : room->roomChat) ctx.push_back(s);
+        }
+
+        NpcNeuralResult nr = NpcNeuralScore(npcs, names, chat, ctx);
+
+        s_cacheKey = cacheKey;
+        s_cacheOk = nr.ok;
+        s_cacheScores = nr.scores;
+        s_cacheTopic = nr.topic;
+    }
+
+    if (s_cacheOk)
+    {
+        // 名字/缩写/槽位号直接命中（无论网络分数）都视为高相关——玩家直接
+        // 叫 NPC。缩写与槽位号由 NpcMatchNickname 兜底识别（§23.3）
+        bool nickHit = (!nm.empty() && NpcMatchNickname(chat, nm, npcSlot + 1));
+
+        // §23.3：缩写/槽位号提及 → 必答（与 @ 同语义，不抛概率）；精确名字
+        // 出现保持 round12 的 85% 相关性接话（R2 验收口径）
+        if (nickHit)
+        {
+            nameHit = true;
+
+            return true;
+        }
+
+        if (!nm.empty() && chat.find(nm) != string::npos)
+        {
+            nameHit = true;
+
+            return NpcRandChance(85);
+        }
+
+        auto it = s_cacheScores.find(nm);
+
+        double score = (it != s_cacheScores.end()) ? it->second : 0.0;
+
+        if (score >= 0.6) return NpcRandChance(80);
+
+        if (score >= 0.4) return NpcRandChance(45);
+
+        if (score >= 0.25 && !s_cacheTopic.empty()) return NpcRandChance(20);
+
+        return NpcRandChance(4);
+    }
+
+    // —— 网络不可用：回退内置规则 ——
+    // 名字精确/缩写/槽位号都视为被提及（NpcMatchNickname 含槽位号「N号」与
+    // 首码点缩写，§23.3）；命中即高概率接话
+    bool nickHit = (!nm.empty() && NpcMatchNickname(chat, nm, npcSlot + 1));
+
+    // §23.3：缩写/槽位号提及 → 必答（网络分支同规则，见上）
+    if (nickHit)
+    {
+        nameHit = true;
+
+        return true;
+    }
+
     if (!nm.empty() && chat.find(nm) != string::npos) nameHit = true;
 
     static const char* topics[] = {
@@ -993,8 +1143,11 @@ bool NpcRoomRelevant(Room* room, int npcSlot, const string& chat, bool& nameHit,
 
 // 房内聊天入口：普通聊天广播已经发出（调用方 RoomMsg 之后），这里让每个
 // NPC 按相关性决定是否接话。atSlot 是 @ 命中槽下标（-1=未命中 @）；
-// at 命中 NPC 槽 → 该 NPC 必答、其余 NPC 按普通相关性
-void NpcRoomMaybeChat(Room* room, const string& senderName, const string& chat, int atSlot)
+// at 命中 NPC 槽 → 该 NPC 必答、其余 NPC 按普通相关性。
+// skipSlots 为已经必答过、不得再因相关性重复触发的 NPC 槽集合（@ 目标与
+// 槽位号提及目标都可能提前必答，见聊天处理）
+void NpcRoomMaybeChat(Room* room, const string& senderName, const string& chat, int atSlot,
+                      const vector<int>& skipSlots)
 {
     if (!room) return;
 
@@ -1007,6 +1160,15 @@ void NpcRoomMaybeChat(Room* room, const string& senderName, const string& chat, 
         // 接话，跳过 atSlot 不再触发第二次必答（否则 @Npc 同一条消息会被发
         // 两遍，AI 路径下还会打两次 HTTP）
         if (i == atSlot) continue;
+
+        bool skip = false;
+
+        for (int s : skipSlots)
+        {
+            if (s == i) { skip = true; break; }
+        }
+
+        if (skip) continue;
 
         bool nameHit = false;
         bool topicHit = false;
@@ -2563,15 +2725,23 @@ void HandleCommand(SOCKET sock, const string& line)
         // 代答。解析失败/目标是发送者自己 → atSlot=-1，只走普通广播
         int atSlot = ParseAtTarget(room, chat, ci.slot);
 
+        // 槽位号提及（§23.3）：聊天含「N号」且 N 是 NPC 槽 → 该 NPC 必答，
+        // 语义与 @ 等价但不需要 @ 前缀；玩家直呼「2号 你说呢」时 2 号位的
+        // NPC 必须回应。命中真人槽号时由真人自己答，服务端不代答
+        int slotMention = ParseRoomSlotMention(room, chat);
+
         RoomMsg(room, ci.name + "：" + chat, sock);
 
         // 房内聊天进 NPC 接话上下文（限 20 条，§22），NPC 按相关性接话；
-        // chatMutex 保护与在线 NPC 回复线程的并发写
+        // chatMutex 保护与在线 NPC 回复线程的并发写。真人聊天会刷新
+        // lastHumanChatTs，作为 NPC 主动发言的"冷场计时"基准（§23.3）
         {
             lock_guard<mutex> lk(room->chatMutex);
             room->roomChat.push_back(ci.name + "：" + chat);
 
             if ((int)room->roomChat.size() > 20) room->roomChat.pop_front();
+
+            room->lastHumanChatTs = GetTickCount64();
         }
 
         if (atSlot >= 0)
@@ -2598,14 +2768,62 @@ void HandleCommand(SOCKET sock, const string& line)
 
             SendToClientL10n(sock, "ROOM_MSG|", "你at了 %s", "You @-ed %s", targetName.c_str());
 
+            // 槽位号提及另一个 NPC：该 NPC 也必答（与 @ 目标不同才触发）
+            vector<int> skipSlots;
+
+            if (atSlot >= 0) skipSlots.push_back(atSlot);
+
+            if (slotMention >= 0 && slotMention != atSlot && room->slots[slotMention].isNpc)
+            {
+                string mContent = chat;
+
+                size_t haoPos = chat.find(to_string(slotMention + 1) + "号");
+
+                if (haoPos != string::npos)
+                {
+                    mContent = chat.substr(haoPos);
+                }
+
+                if (mContent.size() > 80) mContent = mContent.substr(0, 80);
+
+                NpcRoomSpeak(room, room->slots[slotMention].name,
+                             room->slots[slotMention].npcOnline, ci.name, mContent, true);
+
+                skipSlots.push_back(slotMention);
+            }
+
             // @ 命中真人：其他 NPC 按普通聊天相关性决定是否搭话
-            NpcRoomMaybeChat(room, ci.name, chat, atSlot);
+            NpcRoomMaybeChat(room, ci.name, chat, atSlot, skipSlots);
 
             return;
         }
 
-        // 普通聊天：所有 NPC 按相关性决定是否接话（§22）
-        NpcRoomMaybeChat(room, ci.name, chat, -1);
+        // 无 @：槽位号命中 NPC → 该 NPC 必答，其余 NPC 按相关性
+        {
+            vector<int> skipSlots;
+
+            if (slotMention >= 0 && room->slots[slotMention].isNpc)
+            {
+                string mContent = chat;
+
+                size_t haoPos = chat.find(to_string(slotMention + 1) + "号");
+
+                if (haoPos != string::npos)
+                {
+                    mContent = chat.substr(haoPos);
+                }
+
+                if (mContent.size() > 80) mContent = mContent.substr(0, 80);
+
+                NpcRoomSpeak(room, room->slots[slotMention].name,
+                             room->slots[slotMention].npcOnline, ci.name, mContent, true);
+
+                skipSlots.push_back(slotMention);
+            }
+
+            // 普通聊天：所有 NPC 按相关性决定是否接话（§22）
+            NpcRoomMaybeChat(room, ci.name, chat, -1, skipSlots);
+        }
     }
         else
         {
@@ -3677,14 +3895,14 @@ void HandleCommand(SOCKET sock, const string& line)
 
             if (!isNum || argStr.empty())
             {
-                SendToClientL10n(sock, "ERROR|", "档位必须为 0、1 或 2", "Level must be 0, 1 or 2");
+                SendToClientL10n(sock, "ERROR|", "档位必须为 0、1、2 或 3", "Level must be 0, 1, 2 or 3");
                 return;
             }
 
             int lv = atoi(argStr.c_str());
-            if (lv < 0 || lv > 2)
+            if (lv < 0 || lv > 3)
             {
-                SendToClientL10n(sock, "ERROR|", "档位必须为 0、1 或 2", "Level must be 0, 1 or 2");
+                SendToClientL10n(sock, "ERROR|", "档位必须为 0、1、2 或 3", "Level must be 0, 1, 2 or 3");
                 return;
             }
 
@@ -4015,7 +4233,7 @@ void HandleCommand(SOCKET sock, const string& line)
         if (sub == "LEVEL")
         {
             SendToClient(sock, string("ROOM_MSG|") + Txt(ci.lang,
-                (string("职业档位：档位 ") + to_string(room->level) + "（0 基础 / 1 经典 / 2 豪华）").c_str(),
+                (string("职业档位：档位 ") + to_string(room->level) + "（0 基础 / 1 经典 / 2 豪华 / 3 豪华加强）").c_str(),
                 (string("Role level: ") + to_string(room->level) + " (0 basic / 1 classic / 2 deluxe)").c_str()));
             return;
         }
@@ -4592,6 +4810,106 @@ void HandleClient(SOCKET sock)
     closesocket(sock);
 }
 
+// ============ NPC 主动发言（§23.3） ============
+
+// 从最近房内聊天里提取一个话题词（供主动发言嵌入）。反向扫描最近聊天，
+// 命中房内语义词表或「N号」槽位号即返回，保证发言"接着聊"而不突兀
+string NpcPickRoomTopic(Room* room)
+{
+    static const char* topics[] = {
+        "狼人", "预言家", "女巫", "守卫", "猎人", "投票", "放逐",
+        "验人", "查杀", "刀", "票", "身份", "晚上", "白天", "开局",
+        "阵营", "游戏", "赢", "输",
+    };
+
+    lock_guard<mutex> lk(room->chatMutex);
+
+    for (auto it = room->roomChat.rbegin(); it != room->roomChat.rend(); ++it)
+    {
+        const string& line = *it;
+
+        for (size_t k = 0; k < sizeof(topics) / sizeof(topics[0]); ++k)
+        {
+            if (line.find(topics[k]) != string::npos)
+            {
+                return topics[k];
+            }
+        }
+
+        // 「N号」槽位号也算话题
+        for (int i = 1; i <= MAX_PLAYERS; ++i)
+        {
+            string pat = to_string(i) + "号";
+
+            if (line.find(pat) != string::npos) return pat;
+        }
+    }
+
+    return "";
+}
+
+// 主循环定时调用（调用者须持有 g_roomsMutex）。房内冷场超时后让 NPC 主动
+// 抛话题，解决"离线 NPC 过于沉默、不自发发消息"的观感问题。阈值默认 45s，
+// 环境变量 WOLF_NPC_PROACTIVE_MS 注入可缩短（验收用）。条件：房内有 NPC 且
+// 有真人成员、冷场超阈值、距上次主动发言也超阈值（防连发）
+void CheckNpcProactiveSpeak()
+{
+    ULONGLONG now = GetTickCount64();
+    ULONGLONG threshold = (ULONGLONG)NpcEnvInt("WOLF_NPC_PROACTIVE_MS", 45000, 500, 600000);
+
+    for (auto& kv : g_rooms)
+    {
+        Room* r = kv.second.get();
+
+        // 游戏中不主动插话（局内有自己的节拍机制），且必须有人类在场
+        if (r->gameStarted) continue;
+
+        bool hasHuman = false;
+
+        for (int i = 0; i < MAX_PLAYERS; ++i)
+        {
+            if (!r->slots[i].name.empty() && !r->slots[i].isNpc) { hasHuman = true; break; }
+        }
+
+        if (!hasHuman) continue;
+
+        int npcSlot = -1;
+
+        for (int i = 0; i < MAX_PLAYERS; ++i)
+        {
+            if (r->slots[i].isNpc && !r->slots[i].name.empty())
+            {
+                if (!IsMuted(r, r->slots[i].name)) { npcSlot = i; break; }
+            }
+        }
+
+        if (npcSlot < 0) continue;
+
+        ULONGLONG lastHuman = r->lastHumanChatTs;
+
+        if (lastHuman == 0) lastHuman = r->lastProactiveTs;
+
+        if (lastHuman == 0) continue;
+
+        if (now - lastHuman < threshold) continue;
+
+        if (r->lastProactiveTs != 0 && now - r->lastProactiveTs < threshold) continue;
+
+        string topic = NpcPickRoomTopic(r);
+
+        string text = NpcProactiveLine(topic, r->slots[npcSlot].name);
+
+        r->lastProactiveTs = now;
+
+        // 主动发言直接走广播点：不经 NpcRoomSpeak 的 2s 限频与防自接话检查
+        //（那是普通接话语义；主动发言由冷场计时约束）。禁言 NPC 已在上面
+        // 筛选排除；NpcRoomBroadcast 内还有防御性 IsMuted 复查
+        NpcRoomBroadcast(r, r->slots[npcSlot].name, text, now);
+
+        Log("NPC-PROACTIVE room=" + r->roomId + " npc=" + r->slots[npcSlot].name);
+    }
+}
+
 // ============ 启动等待兜底（§13.2） ============
 
 // 主循环定时调用（调用者须持有 g_roomsMutex）。对 gameStarted 且所有槽位
@@ -4708,6 +5026,41 @@ void CheckEmptyRoomCleanup()
 
 // ============ main ============
 
+// 崩溃兜底：任何未处理异常/访问违例都写 crash.log（SEH 在栈破坏等场景也
+// 能触发）。原因：cout 缓冲在强杀/崩溃时会丢失（坑 20），排查"进程无预兆
+// 退出"只能靠落盘文件
+static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* ep)
+{
+    FILE* f = nullptr;
+    fopen_s(&f, "crash.log", "a");
+
+    if (f)
+    {
+        HMODULE hMod = nullptr;
+
+        if (ep && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                     (LPCSTR)ep->ExceptionRecord->ExceptionAddress, &hMod))
+        {
+            fprintf(f, "[%llu] code=%08x addr=%p mod=%p offset=%p\n",
+                    (unsigned long long)GetTickCount64(),
+                    ep->ExceptionRecord->ExceptionCode,
+                    ep->ExceptionRecord->ExceptionAddress,
+                    (void*)hMod,
+                    (char*)ep->ExceptionRecord->ExceptionAddress - (char*)hMod);
+        }
+        else
+        {
+            fprintf(f, "[%llu] code=%08x addr=%p\n", (unsigned long long)GetTickCount64(),
+                    ep ? ep->ExceptionRecord->ExceptionCode : 0,
+                    ep ? ep->ExceptionRecord->ExceptionAddress : nullptr);
+        }
+
+        fclose(f);
+    }
+
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 int main(int argc, char* argv[])
 {
     DisableConsoleQuickEdit();
@@ -4766,6 +5119,8 @@ int main(int argc, char* argv[])
     }
 
     g_listenPort = port;
+
+    SetUnhandledExceptionFilter(CrashDumpHandler);
 
     signal(SIGINT, [](int) { g_running = false; if (g_listenSock != INVALID_SOCKET) closesocket(g_listenSock); });
     signal(SIGTERM, [](int) { g_running = false; if (g_listenSock != INVALID_SOCKET) closesocket(g_listenSock); });
@@ -4842,6 +5197,7 @@ int main(int argc, char* argv[])
 
         lock_guard<mutex> lock(g_roomsMutex);
         CheckGameWaitTimeouts();
+        CheckNpcProactiveSpeak();
         CheckEmptyRoomCleanup();
     }
 

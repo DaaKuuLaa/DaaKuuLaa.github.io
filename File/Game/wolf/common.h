@@ -158,6 +158,14 @@ const JobDef JOBS[] =
                                           "Neutral camp. At start, two extra identity cards are added to the pool; the thief picks one (a wolf may be hidden in it) and acts as that identity." },
     { 9, "villager",   "村民",   CAMP_VILLAGER,"好人平民。无特殊技能，白天参与发言与投票放逐。",
                                           "Good side. No special skill; talks and votes to exile during the day." },
+    { 10, "bear",       "驯熊师", CAMP_GOD,    "神职阵营。每晚查验与自己在槽位上相邻的存活玩家中是否有狼；天亮时有狼则咆哮（全体可见），无狼则安静。",
+                                          "God camp. Each night senses whether a wolf is adjacent to you; if so the bear growls at dawn (seen by all), otherwise it stays quiet." },
+    { 11, "crow",       "乌鸦",   CAMP_GOD,    "神职阵营。每晚可标记一名玩家，次日该玩家投票时多算一票（污票），每晚可换人。",
+                                          "God camp. Each night may mark one player; that player's vote counts double the next day. May change target nightly." },
+    { 12, "knight",     "骑士",   CAMP_GOD,    "神职阵营。白天投票前可挑战一名玩家（全局限一次）：目标是狼则其立即死亡并进入夜晚；目标不是狼则骑士自己死亡并进入夜晚。",
+                                          "God camp. Before the day's vote, may challenge one player (once per game): if they are a wolf they die and night falls; otherwise the knight dies and night falls." },
+    { 13, "wolfbeauty", "狼美人", CAMP_WOLF,   "狼人阵营。夜晚随狼群刀杀；被放逐或被狼刀身亡时（全局限一次）可带走一名玩家殉情。",
+                                          "Wolf camp. Kills with the pack at night; when exiled or killed by wolves, may take one player with them (once per game)." },
 };
 
 const int JOB_COUNT = sizeof(JOBS) / sizeof(JOBS[0]);
@@ -176,12 +184,12 @@ const JobDef* FindJob(const string& name)
 }
 
 // ============ 档位/村民开关对应的职业集合 ============
-// 档位：0 基础 / 1 经典 / 2 豪华（需求 §3.2）
+// 档位：0 基础 / 1 经典 / 2 豪华 / 3 豪华加强（需求 §3.2、§23.5）
 // 返回该档位下启用的非村民职业 ID 列表。
 bool GetJobsForLevel(int level, vector<int>& out)
 {
     out.clear();
-    if (level < 0 || level > 2) return false;
+    if (level < 0 || level > 3) return false;
     // 档位 0 基础：狼人、预言家、女巫、猎人
     out.push_back(0); // werewolf
     out.push_back(2); // seer
@@ -197,6 +205,13 @@ bool GetJobsForLevel(int level, vector<int>& out)
         out.push_back(1); // whitewolf
         out.push_back(7); // cupid
         out.push_back(8); // thief
+    }
+    if (level >= 3)
+    {
+        out.push_back(10); // bear
+        out.push_back(11); // crow
+        out.push_back(12); // knight
+        out.push_back(13); // wolfbeauty
     }
     return true;
 }

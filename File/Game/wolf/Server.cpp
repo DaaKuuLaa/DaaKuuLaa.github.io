@@ -72,7 +72,7 @@ int g_numPlayers = 0;        // 实际人数 N（2..MAX_PLAYERS）
 int g_wolfCount = 0;         // 狼人人数
 int g_neutralCount = 0;      // 中立人数
 int g_godCount = 0;          // 神职人数
-int g_level = 0;             // 职业档位 0/1/2
+int g_level = 0;             // 职业档位 0..3（3=豪华加强：驯熊师/乌鸦/骑士/狼美人）
 bool g_villagerSwitch = false; // 村民职业是否启用
 
 // 房间管理器通知参数（由 Start.exe 传入）
@@ -98,6 +98,11 @@ struct Player
     bool   hunterShootUsed = false; // 猎人是否已开过枪（全局限一枪）
     bool   idiotFlipped = false;    // 白痴是否已翻牌（翻牌后失去投票权）
     int    voteTarget = -1;         // 白天投票目标（-1=尚未投票，0=弃权）
+    int    crowMarked = 0;          // 乌鸦当晚标记的目标槽号（0=未标记；次日投票 +1 票，§23.5）
+    bool   knightChallenged = false;// 骑士是否已挑战过（全局限一次，§23.5）
+    bool   wolfBeautyUsed = false;  // 狼美人死亡带走是否已用（全局限一次，§23.5）
+    int    bearGrowlTarget = 0;     // 驯熊师当晚相邻狼情：0=无相邻狼（安静），>0=有相邻狼（咆哮）
+    int    crowLastMarked = 0;      // 乌鸦上轮标记（标记可换人，night_crow 决策参考）
 };
 vector<Player> g_players;           // 下标 1..g_numPlayers，槽 0 不用
 
@@ -1696,6 +1701,9 @@ string DeathText(int slot, const string& cause, Lang l)
     else if (cause == "bomber") how = (l == Lang::En) ? " died as the White Wolf King" : "白狼王自爆身亡";
     else if (cause == "lover") how = (l == Lang::En) ? " died with their lover" : "因情侣殉情";
     else if (cause == "hunter") how = (l == Lang::En) ? " was shot by the hunter" : "被猎人开枪带走";
+    else if (cause == "beauty") how = (l == Lang::En) ? " was taken by the Wolf Beauty" : "被狼美人带走";
+    else if (cause == "knight") how = (l == Lang::En) ? " was defeated by the Knight's challenge" : "被骑士挑战击杀";
+    else if (cause == "knight_fail") how = (l == Lang::En) ? " died failing the challenge" : "骑士挑战失败身亡";
     else how = (l == Lang::En) ? " died" : "死亡";
 
     return who + how;
@@ -1748,6 +1756,54 @@ bool AskHunterShot(int hunterSlot, int& target)
     }
 }
 
+// 狼美人殉情（§23.5）：被放逐/被狼刀/被自爆带走身亡时可带走一名存活玩家
+//（全局限一次；毒死不能带走，与猎人同规则）。NPC 用 wolfbeauty_take 决策、
+// 真人输入目标；放弃输入 0。返回 false 表示应中止游戏
+bool AskWolfBeauty(int beautySlot, int& target)
+{
+    target = 0;
+
+    if (IsNpc(beautySlot))
+    {
+        int t = ParseNpcTarget(
+            NpcGetAction(beautySlot, "wolfbeauty_take", AliveTargetList(beautySlot), ""),
+            "WOLFBEAUTY_TAKE");
+
+        if (!(t == 0 || t == -1 || (t >= 1 && t <= g_numPlayers && g_players[t].alive && t != beautySlot)))
+        {
+            t = 0;
+        }
+
+        if (t == -1) t = 0;
+
+        target = t;
+        return true;
+    }
+
+    while (true)
+    {
+        string in;
+
+        if (!AskChoiceL10n(beautySlot - 1, "你被击杀了，请输入殉情目标编号（0 不带走）：", "You died. Enter a player to take with you (0 = none):", in)) return false;
+
+        int t = atoi(in.c_str());
+
+        if (t == 0)
+        {
+            target = 0;
+            return true;
+        }
+
+        if (t >= 1 && t <= g_numPlayers && g_players[t].alive && t != beautySlot)
+        {
+            target = t;
+            return true;
+        }
+
+        SendToClientL10n(beautySlot, "输入不合法：目标必须是 1..N 的存活玩家或 0。请重新输入。", "Invalid target: must be an alive player 1..N or 0. Try again.");
+    }
+}
+
 // 处死玩家并广播（处理情侣殉情、猎人开枪，均用队列逐个结算，
 // 避免递归过深；猎人开枪还会引入新的待处死玩家）。
 void KillPlayer(int slot, const string& cause)
@@ -1780,6 +1836,9 @@ void KillPlayer(int slot, const string& cause)
             else if (c == "bomber") how = "白狼王自爆身亡";
             else if (c == "lover") how = "因情侣殉情";
             else if (c == "hunter") how = "被猎人开枪带走";
+            else if (c == "beauty") how = "被狼美人带走";
+            else if (c == "knight") how = "被骑士挑战击杀";
+            else if (c == "knight_fail") how = "骑士挑战失败身亡";
             else how = "死亡";
 
             g_deathNotes.push_back(to_string(s) + "号" + g_players[s].name + "（" + JOBS[g_players[s].jobId].zhName + "）已死亡，" + how + "。");
@@ -1824,6 +1883,28 @@ void KillPlayer(int slot, const string& cause)
                 pending.push_back({ partner, "lover" });
             }
         }
+
+        // 狼美人殉情（§23.5）：被放逐/被狼刀/被自爆带走身亡时可带走一名玩家，
+        // 全局限一次；毒死不能带走（与猎人同规则）。target 目标入队列继续结算
+        if (g_players[s].jobId == 13 && !g_players[s].wolfBeautyUsed &&
+            (c == "exile" || c == "wolf" || c == "bomb"))
+        {
+            int bt = 0;
+
+            if (AskWolfBeauty(s, bt))
+            {
+                if (bt > 0 && bt <= g_numPlayers)
+                {
+                    g_players[s].wolfBeautyUsed = true;
+                    SendToAllL10n("狼美人%s带走了%s！", "The Wolf Beauty %s took %s!", g_players[s].name.c_str(), g_players[bt].name.c_str());
+                    pending.push_back({ bt, "beauty" });
+                }
+            }
+            else
+            {
+                return;
+            }
+        }
     }
 }
 
@@ -1845,7 +1926,17 @@ vector<int> BuildJobPool()
             pool.push_back(1); // 白狼王
         }
 
+        // level>=3 且狼数≥2：狼美人取代一个普通狼位（§23.5），白狼王保留
+        bool wolfBeauty = (g_level >= 3 && g_wolfCount >= 2);
+
         int wolves = (g_level >= 2) ? g_wolfCount - 1 : g_wolfCount;
+
+        if (wolfBeauty && wolves >= 1)
+        {
+            pool.push_back(13); // 狼美人
+
+            --wolves;
+        }
 
         for (int i = 0; i < wolves; ++i) pool.push_back(0);
     }
@@ -1865,7 +1956,9 @@ vector<int> BuildJobPool()
 
     for (int i = 0; i < neut; ++i) pool.push_back(neutCand[i]);
 
-    // 神职部分：每种最多 1 个，按固定顺序取
+    // 神职部分：每种最多 1 个；level>=3 时候选洗牌后取前 N 个（与中立池
+    // 一致），否则新神职按固定顺序永远排末尾、LEVEL3 局测不到驯熊师/
+    // 乌鸦/骑士；低档位保持固定顺序保证旧测试的女巫/预言家必在
     vector<int> godCand;
     godCand.push_back(2); // 预言家
     godCand.push_back(3); // 女巫
@@ -1875,6 +1968,16 @@ vector<int> BuildJobPool()
     {
         godCand.push_back(5); // 守卫
         godCand.push_back(6); // 白痴
+    }
+
+    // level>=3：追加新神职（§23.5）驯熊师/乌鸦/骑士
+    if (g_level >= 3)
+    {
+        godCand.push_back(10); // 驯熊师
+        godCand.push_back(11); // 乌鸦
+        godCand.push_back(12); // 骑士
+
+        random_shuffle(godCand.begin(), godCand.end());
     }
 
     int gods = min(g_godCount, (int)godCand.size());
@@ -2445,6 +2548,102 @@ bool AskWitch(int wolfTarget, int guardTarget, int& saveTarget, int& poisonTarge
     return true;
 }
 
+// 驯熊师感知（§23.5）：自动能力，无需输入。查验与自己在槽位上相邻的存活
+// 玩家（槽 i-1 / i+1，越界跳过）中是否有狼（狼人/白狼王/狼美人）。有狼则
+// 天亮咆哮（全员可见）、无狼安静。NPC 与真人同规则，纯信息无决策
+bool AskBear()
+{
+    int bear = FindAliveJob(10);
+
+    if (bear < 0) return true;
+
+    int nearWolf = 0;
+
+    for (int d = -1; d <= 1; d += 2)
+    {
+        int nb = bear + d;
+
+        if (nb < 1 || nb > g_numPlayers) continue;
+
+        if (!g_players[nb].alive) continue;
+
+        int j = g_players[nb].jobId;
+
+        if (j == 0 || j == 1 || j == 13)
+        {
+            nearWolf = nb;
+            break;
+        }
+    }
+
+    g_players[bear].bearGrowlTarget = nearWolf;
+
+    return true;
+}
+
+// 乌鸦标记（§23.5）：每晚选一名存活玩家标记，次日该玩家投票 +1 票（污票），
+// 可每晚换人。NPC 用 night_crow 决策、真人输入槽号；目标非法回退不标
+bool AskCrow()
+{
+    int crow = FindAliveJob(11);
+
+    if (crow < 0) return true;
+
+    int t = 0;
+
+    if (IsNpc(crow))
+    {
+        string extra = "你上一晚标记的目标：";
+
+        if (g_players[crow].crowLastMarked >= 1)
+        {
+            extra += to_string(g_players[crow].crowLastMarked) + "号"
+                + g_players[g_players[crow].crowLastMarked].name;
+        }
+        else extra += "无";
+
+        t = ParseNpcTarget(
+            NpcGetAction(crow, "night_crow", AliveTargetList(0), extra),
+            "NIGHT_CROW");
+
+        if (t == -1) t = 0;
+
+        if (!(t == 0 || (t >= 1 && t <= g_numPlayers && g_players[t].alive)))
+        {
+            t = 0;
+        }
+    }
+    else
+    {
+        while (true)
+        {
+            string in;
+
+            if (!AskChoiceL10n(crow - 1, "你是乌鸦，请输入要标记的玩家编号（1..N）：", "You are the Crow. Enter a player to mark (1..N):", in)) return false;
+
+            int v = atoi(in.c_str());
+
+            if (v >= 1 && v <= g_numPlayers && g_players[v].alive)
+            {
+                t = v;
+                break;
+            }
+
+            SendToClientL10n(crow, "目标不合法：必须是 1..N 的存活玩家。", "Invalid target: an alive player 1..N.");
+        }
+    }
+
+    g_players[crow].crowMarked = t;
+    g_players[crow].crowLastMarked = t;
+
+    if (t >= 1)
+    {
+        MemRecord("乌鸦标记" + to_string(t) + "号" + g_players[t].name);
+    }
+
+    return true;
+}
+
 // 夜晚结算：守卫免刀 > 女巫救 > 狼刀 > 女巫毒；守+救冲突判死
 // 返回 false 表示应中止游戏
 bool ResolveNight(int guardTarget, int wolfTarget, int saveTarget, int poisonTarget)
@@ -2524,6 +2723,14 @@ bool NightPhase()
         }
     }
 
+    // 驯熊师（§23.5）：自动感知相邻狼情，无输入阶段
+    if (FindAliveJob(10) >= 0)
+    {
+        SendToAllL10n("驯熊师请睁眼。", "Bear Trainer, open your eyes.");
+        GLog("NightPhase: bear sensing");
+        if (!AskBear()) return false;
+    }
+
     // 狼人归票
     GLog("NightPhase: asking wolves");
     SendToAllL10n("狼人请睁眼。", "Werewolves, open your eyes.");
@@ -2550,6 +2757,14 @@ bool NightPhase()
 
     if (!AskSeer()) return false;
 
+    // 乌鸦（§23.5）：标记污票目标，预言家之后、女巫之前
+    if (FindAliveJob(11) >= 0)
+    {
+        SendToAllL10n("乌鸦请睁眼。", "Crow, open your eyes.");
+        GLog("NightPhase: asking crow");
+        if (!AskCrow()) return false;
+    }
+
     // 女巫（职业不在场则不广播该段开场）
     int saveTarget = 0;
     int poisonTarget = 0;
@@ -2564,12 +2779,84 @@ bool NightPhase()
     // 结算
     SendToAllL10n("天亮了……", "Dawn...");
 
+    // 驯熊师天亮结果（§23.5）：有相邻狼咆哮、无则安静；驯熊师不在场不播
+    if (FindAliveJob(10) >= 0)
+    {
+        int bt = g_players[FindAliveJob(10)].bearGrowlTarget;
+
+        if (bt >= 1)
+        {
+            SendToAllL10nPair(
+                "驯熊师咆哮了！它嗅到了狼的气息。",
+                "The bear roars! It senses a wolf nearby.");
+            MemRecord("驯熊师咆哮（相邻有狼）");
+        }
+        else
+        {
+            SendToAllL10nPair(
+                "驯熊师安静地趴着，周围没有狼。",
+                "The bear stays quiet; no wolf is near.");
+            MemRecord("驯熊师安静（相邻无狼）");
+        }
+    }
+
     if (!ResolveNight(guardTarget, wolfTarget, saveTarget, poisonTarget)) return false;
 
     // 夜晚阶段结束：低频落地一次记忆文件（失败忽略，只是参考资料）
     SaveStateMemory();
 
     return true;
+}
+
+// 槽位号提及解析（§23.3）：聊天中出现「N号」（如 2号/1号）或「第N号」形式且
+// N 是合法玩家槽位时返回该槽；纯数字 token（如 "2"）在白天聊天里也可视为槽位
+// 提及。命中的槽位若是 NPC，调用方据此置 atTarget 让该 NPC 必答——与 @ 语义
+// 等价但不需要 @ 前缀，符合「2号 1号 槽位 → 对应 NPC 需要回复」需求
+int ParseSlotMention(const string& content)
+{
+    if (content.empty()) return 0;
+
+    // 收集所有数字 token：剥离非数字字符后按连续数字段检查「N号」/「N」形态
+    size_t i = 0;
+
+    while (i < content.size())
+    {
+        if (!isdigit((unsigned char)content[i]))
+        {
+            ++i;
+            continue;
+        }
+
+        size_t j = i;
+
+        while (j < content.size() && isdigit((unsigned char)content[j])) ++j;
+
+        string numStr = content.substr(i, j - i);
+
+        // 数字后紧跟「号」字才视为槽位号（避免把「2次」「3票」误当提及）；
+        // 若数字是完整 token（两侧都是非字母数字）也接受，白天讨论常直呼编号
+        bool hasHao = (j < content.size() && content[j] == '号');
+
+        bool standalone = true;
+
+        if (i > 0 && (isalnum((unsigned char)content[i - 1]) || content[i - 1] == '_')) standalone = false;
+
+        if (j < content.size() && (isalnum((unsigned char)content[j]) || content[j] == '_')) standalone = false;
+
+        if (hasHao || standalone)
+        {
+            int slot = atoi(numStr.c_str());
+
+            if (slot >= 1 && slot <= g_numPlayers && !g_players[slot].name.empty())
+            {
+                return slot;
+            }
+        }
+
+        i = j;
+    }
+
+    return 0;
 }
 
 // ============ 白天阶段 ============
@@ -2642,15 +2929,103 @@ bool ParseBombCommand(const string& content, int& target)
     return true;
 }
 
+// 骑士挑战命令（§23.5）：CHALLENGE <槽号>（短别名 CJ/挑战）。
+// 只有骑士本人可用；解析成功返回 true（target 为槽号）
+bool ParseChallengeCommand(const string& content, int& target)
+{
+    string line = content;
+
+    for (char& ch : line)
+    {
+        if (ch == '|') ch = ' ';
+    }
+
+    vector<string> tok = SplitTokens(line);
+
+    if (tok.empty()) return false;
+
+    if (tok[0] != "CHALLENGE" && tok[0] != "challenge" && tok[0] != "Challenge"
+        && tok[0] != "挑战" && tok[0] != "CJ" && tok[0] != "cj") return false;
+
+    if (tok.size() < 2) return false;
+
+    target = atoi(tok[1].c_str());
+    return true;
+}
+
+// 骑士挑战结算（§23.5）：目标为狼 → 狼死进夜晚；非狼 → 骑士死进夜晚。
+// 返回 1=已挑战（进入夜晚）；0=放弃挑战（不触发，正常投票）
+int DoKnightChallenge(int knight, int target)
+{
+    if (target == 0) return 0;
+
+    int j = g_players[target].jobId;
+
+    bool isWolf = (j == 0 || j == 1 || j == 13);
+
+    if (isWolf)
+    {
+        SendToAllL10n("骑士%s挑战%s，对方是狼！", "Knight %s challenged %s, and they are a wolf!", g_players[knight].name.c_str(), g_players[target].name.c_str());
+        MemRecord("骑士挑战" + to_string(target) + "号" + g_players[target].name + "（狼）");
+        KillPlayer(target, "knight");
+    }
+    else
+    {
+        SendToAllL10n("骑士%s挑战%s失败，对方不是狼。", "Knight %s challenged %s but they are not a wolf.", g_players[knight].name.c_str(), g_players[target].name.c_str());
+        MemRecord("骑士挑战" + to_string(target) + "号" + g_players[target].name + "（非狼，失败）");
+        KillPlayer(knight, "knight_fail");
+    }
+
+    return 1;
+}
+
+// 骑士挑战（§23.5）：白天投票前，NPC 骑士自动决策发起挑战（真人骑士走
+// 命令式 CHALLENGE，不进入本函数）。target 输出挑战目标。
+// 返回 1=已挑战、0=未挑战（含真人骑士）、-1=决策失败中止游戏。
+// 挑战引发的死亡由 DoKnightChallenge 用 KillPlayer 完成
+int AskKnightChallenge(int& target)
+{
+    target = 0;
+
+    int knight = FindAliveJob(12);
+
+    if (knight < 0) return 0;
+
+    if (g_players[knight].knightChallenged) return 0;
+
+    if (!IsNpc(knight)) return 0;
+
+    int t = ParseNpcTarget(
+        NpcGetAction(knight, "knight_challenge", AliveTargetList(knight), ""),
+        "KNIGHT_CHALLENGE");
+
+    if (t == -1) t = 0;
+
+    if (!(t == 0 || (t >= 1 && t <= g_numPlayers && g_players[t].alive && t != knight)))
+    {
+        t = 0;
+    }
+
+    g_players[knight].knightChallenged = true;
+
+    target = t;
+
+    if (t == 0) return 0;
+
+    return DoKnightChallenge(knight, t);
+}
+
 // 收集白天投票与聊天；白狼王可随时自爆。
 // 窗口最长 DAY_VOTE_TIMEOUT_SECONDS 秒，到期后未投票的存活玩家自动弃权；
 // 每 10 秒给所有存活玩家重发 __DAY_OPEN__（防单播窗口指令丢失导致失声；
 // 已投票玩家窗口本就常开，重复开窗幂等无害，需求 §14.1）。
-// 返回 false 表示应中止游戏。bombTarget>0 表示白狼王自爆（跳过放逐）。
-bool GatherDayVotes(int& exiled, int& bombTarget)
+// 返回 false 表示应中止游戏。bombTarget>0 表示白狼王自爆（跳过放逐）；
+// challengeTarget>0 表示骑士挑战已发起（跳过放逐，直接进入夜晚）
+bool GatherDayVotes(int& exiled, int& bombTarget, int& challengeTarget)
 {
     exiled = -1;
     bombTarget = 0;
+    challengeTarget = 0;
 
     // 重置投票状态
     for (int i = 1; i <= g_numPlayers; ++i)
@@ -2815,6 +3190,34 @@ bool GatherDayVotes(int& exiled, int& bombTarget)
             }
         }
 
+        // 骑士挑战（§23.5）：只限骑士本人、白天投票窗口内、全局限一次。
+        // 命令式 CHALLENGE <槽号>（短别名 CJ/挑战），与 BOMB 平行的立即结算：
+        // 目标为狼 → 狼死进夜晚；非狼 → 骑士死进夜晚。成功后跳过剩余投票
+        if (g_players[slot].jobId == 12 && !g_players[slot].knightChallenged)
+        {
+            int ct = -1;
+
+            if (ParseChallengeCommand(content, ct))
+            {
+                if (ct >= 1 && ct <= g_numPlayers && g_players[ct].alive && ct != slot)
+                {
+                    g_players[slot].knightChallenged = true;
+
+                    if (DoKnightChallenge(slot, ct) == 1)
+                    {
+                        challengeTarget = ct;
+                        return true;
+                    }
+
+                    challengeTarget = 0;
+                    continue;
+                }
+
+                SendToClientL10n(from + 1, "挑战目标不合法：必须是 1..N 的存活玩家且不能是自己。请重新输入。", "Invalid challenge target: an alive player 1..N, not yourself. Try again.");
+                continue;
+            }
+        }
+
         int vote = -1;
 
         if (ParseVoteCommand(content, vote))
@@ -2900,17 +3303,86 @@ bool GatherDayVotes(int& exiled, int& bombTarget)
 
                     MemRecord(g_players[slot].name + "@" + g_players[atSlot].name + "：" + stripped);
                 }
+
+                // 槽位号提及（§23.3）：聊天含「N号」且该槽是 NPC → 置 atTarget
+                // 让该 NPC 必答；与 @ 语义等价但不需要 @ 前缀。@ 已命中同一 NPC
+                // 时跳过（避免重复回应）。真人槽号出现时不需要服务端代答
+                int slotMention = ParseSlotMention(sanitized);
+
+                if (slotMention >= 1 && slotMention != atSlot && IsNpc(slotMention))
+                {
+                    // 去「N号」前缀后的内容作为被点名的回应文本，附完整原始行
+                    string mentioned;
+
+                    size_t haoPos = sanitized.find(to_string(slotMention) + "号");
+
+                    if (haoPos != string::npos)
+                    {
+                        mentioned = sanitized.substr(haoPos);
+                    }
+                    else
+                    {
+                        mentioned = sanitized;
+                    }
+
+                    if (mentioned.size() > 80) mentioned = mentioned.substr(0, 80);
+
+                    g_npcChat[slotMention].atTarget = mentioned
+                        + g_players[slot].name + "：" + sanitized;
+
+                    MemRecord(g_players[slot].name + "提及" + to_string(slotMention)
+                        + "号" + g_players[slotMention].name + "：" + mentioned);
+                }
+
+                // 缩写/别称提及（§23.3）：聊天含某存活 NPC 的名字缩写或首码点
+                // 别称且带讨论感词 → 该 NPC 置 atTarget 必答（复用 NpcMatchNickname
+                // 的槽位号+首码点匹配）。@ 与槽位号已处理的目标不再重复触发
+                for (int i = 1; i <= g_numPlayers; ++i)
+                {
+                    if (!g_players[i].alive || !IsNpc(i)) continue;
+
+                    if (i == slot || i == atSlot || i == slotMention) continue;
+
+                    if (g_npcChat[i].atTarget.empty() &&
+                        NpcMatchNickname(sanitized, g_players[i].name, i))
+                    {
+                        g_npcChat[i].atTarget = sanitized
+                            + g_players[slot].name + "：" + sanitized;
+
+                        MemRecord(g_players[slot].name + "提及" + g_players[i].name
+                            + "（缩写/别称）");
+                    }
+                }
             }
         }
     }
 
-    // 计票：票多者放逐，平票无人放逐
+    // 计票：票多者放逐，平票无人放逐。
+    // 乌鸦污票（§23.5）：被乌鸦标记的玩家当晚投出的票权重 2（cnt 加 2），
+    // 未投票/弃权不受影响；标记目标死亡时污票自然消失。乌鸦槽位的 crowMarked
+    // 记录本夜标记目标；标记每夜可换人，白天结束后清空
+    int crowSlot = FindAliveJob(11);
+
+    int crowMarked = (crowSlot >= 1) ? g_players[crowSlot].crowMarked : 0;
+
     vector<int> cnt(g_numPlayers + 1, 0);
 
     for (int i = 1; i <= g_numPlayers; ++i)
     {
-        if (g_players[i].voteTarget >= 1) cnt[g_players[i].voteTarget]++;
+        if (g_players[i].voteTarget < 1) continue;
+
+        int weight = 1;
+
+        if (i == crowMarked)
+        {
+            weight = 2;
+        }
+
+        cnt[g_players[i].voteTarget] += weight;
     }
+
+    // 白天结束，乌鸦标记失效（次夜 AskCrow 会重新标记）
+    if (crowSlot >= 1) g_players[crowSlot].crowMarked = 0;
 
     int maxV = 0;
 
@@ -3104,8 +3576,28 @@ bool DayPhase()
 
     int exiled = -1;
     int bombTarget = 0;
+    int challengeTarget = 0;
 
-    if (!GatherDayVotes(exiled, bombTarget))
+    // 骑士挑战（§23.5）：NPC 骑士自动决策（投票前），真人骑士在投票窗口用
+    // CHALLENGE <槽号> 命令发起（与 BOMB 平行的命令式交互）。挑战成功由
+    // KillPlayer 结算并进入夜晚（跳过投票）；未挑战走正常投票流程
+    int knightRc = AskKnightChallenge(challengeTarget);
+
+    if (knightRc == -1)
+    {
+        g_dayVoting = false;
+        return false;
+    }
+
+    if (knightRc == 1)
+    {
+        SendToAll("__DAY_CLOSE__");
+        g_dayVoting = false;
+        SaveStateMemory();
+        return true;
+    }
+
+    if (!GatherDayVotes(exiled, bombTarget, challengeTarget))
     {
         g_dayVoting = false;
         return false;
@@ -3117,6 +3609,14 @@ bool DayPhase()
 
     // 白狼王自爆后直接进入夜晚（跳过放逐），但窗口已在上面关闭
     if (bombTarget > 0)
+    {
+        SaveStateMemory();
+
+        return true;
+    }
+
+    // 骑士挑战后同样直接进入夜晚（跳过放逐与遗言）
+    if (challengeTarget > 0)
     {
         SaveStateMemory();
 
@@ -3400,7 +3900,7 @@ int main(int argc, char* argv[])
     if (g_wolfCount < 0) g_wolfCount = 0;
     if (g_neutralCount < 0) g_neutralCount = 0;
     if (g_godCount < 0) g_godCount = 0;
-    if (g_level < 0 || g_level > 2) g_level = 0;
+    if (g_level < 0 || g_level > 3) g_level = 0;
 
     // 初始化玩家表
     g_players.assign(g_numPlayers + 1, Player());
@@ -3494,7 +3994,19 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    srand((unsigned)time(0));
+    // 随机种子：测试可用 WOLF_RAND_SEED 固定（多局覆盖特定职业组合），
+    // 未设时按时间种子（生产行为不变）
+    const char* rs = getenv("WOLF_RAND_SEED");
+
+    if (rs && *rs)
+    {
+        srand((unsigned)atoi(rs));
+        Log("rand seed = " + string(rs));
+    }
+    else
+    {
+        srand((unsigned)time(0));
+    }
 
     // 开局清零：聊天历史/状态记忆/等待提示组合都是本局累积量，
     // 进程虽是一局一进程，显式清零让内存阶段状态永远从干净起点开始

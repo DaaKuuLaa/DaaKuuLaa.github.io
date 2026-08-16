@@ -104,9 +104,10 @@ while (-not $gameOver -and [DateTime]::Now -lt $deadline) {
                     foreach ($c2 in $script:conns) { if ($c2.k -ne $cl.k -and $c2.alive) { $t = $c2.k; break } }
                     $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $t)
                 } elseif ($cl.role -eq 'witch') {
-                    # 首夜解药救狼刀目标，其余输入毒药弃用（发 0）
-                    if ($cl.witchInputs -eq 0 -and $script:wolfTarget) {
-                        $cl.w.WriteLine('PLAYER_' + $cl.k + '|' + $script:wolfTarget)
+                    # 新协议：解药输入 1=救当夜狼刀目标、0=不救（不再是目标槽号）；
+                    # 第二次输入毒药弃用（发 0）
+                    if ($cl.witchInputs -eq 0) {
+                        $cl.w.WriteLine('PLAYER_' + $cl.k + '|1')
                     } else {
                         $cl.w.WriteLine('PLAYER_' + $cl.k + '|0')
                     }
