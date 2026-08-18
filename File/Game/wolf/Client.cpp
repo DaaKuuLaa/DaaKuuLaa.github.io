@@ -1624,8 +1624,8 @@ struct HelpDetail
 static const HelpDetail HELP_DETAILS[] = {
     { "HELP", "HELP [ALL|指令名|职业名]：无参数显示命令表；HELP ALL 显示全部职业列表；HELP <指令名> 显示指令用法；HELP <职业名> 显示职业介绍。中文别名「帮助」。",
                "HELP [ALL|command|role]: no arg shows the command list; HELP ALL lists all roles; HELP <command> shows its usage; HELP <role> shows role info. Chinese alias: 帮助." },
-    { "SHOW", "SHOW <子项>：查看房间信息。子项：BAN 黑名单（房主）、RATIO 比例、LEVEL 档位、VILLAGER 村民开关、AUTO 自动开局、ADD 本地用户与 NPC（房主）、MUTE 禁言名单（房主）。无参数或未知子项输出用法。与 LOOK 完全等效。",
-               "SHOW <item>: view room info. Items: BAN blacklist (host), RATIO ratio, LEVEL role level, VILLAGER toggle, AUTO auto-start, ADD local users and NPCs (host), MUTE mute list (host). No arg or unknown item prints usage. Fully equivalent to LOOK." },
+    { "SHOW", "SHOW <子项>：查看房间信息。子项：BAN 黑名单（房主）、RATIO 比例、LEVEL 档位、VILLAGER 村民开关、AUTO 自动开局、ADD 本地用户与 NPC（房主）、MUTE 禁言名单（房主）、NPCKEY AI key 配置状态。无参数或未知子项输出用法。与 LOOK 完全等效。",
+               "SHOW <item>: view room info. Items: BAN blacklist (host), RATIO ratio, LEVEL role level, VILLAGER toggle, AUTO auto-start, ADD local users and NPCs (host), MUTE mute list (host), NPCKEY AI key config status. No arg or unknown item prints usage. Fully equivalent to LOOK." },
     { "LOOK", "LOOK <子项>：查看房间信息，与 SHOW 完全等效（用法见 HELP SHOW）。",
                "LOOK <item>: view room info, fully equivalent to SHOW (see HELP SHOW)." },
     { "ADD", "ADD USER <username> [-u] <玩家名或槽位>：添加本地用户占槽位（开局自动开窗进游戏；无 -u 默认由房主控制，-u 指定控制者）。ADD NPC [NPCname] on|off：添加 NPC（on 在线 AI / off 离线逻辑）。【房主】【大厅可用】",

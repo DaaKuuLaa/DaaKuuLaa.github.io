@@ -2,7 +2,9 @@
 
 联网控制台版狼人杀 C++ 项目。源码：`Start.cpp`（房间管理器）/ `Server.cpp`（单局服务器）/ `Client.cpp`（客户端）/ `common.h`（共享协议与职业表），测试脚本在 `tests/`。狼人杀复用了 `reference/demon/`（恶魔轮盘，已完成的参考项目）已验证的架构、协议思路和所有已修复的坑。
 
-> 当前状态：**第十五轮（round15）：GLM 诊断修复 + 离线 NPC 智能化**。用户部署 NPCKEY 后反馈「还是没有正确调用 GLM」——start.log 显示 `key=(set)`（NPCKEY 生效）但全部 `NPC-ONLINE-RES ok=0`，且 3 秒内返回、不重试 → 判定 4xx 拒绝（非网络层）。**本轮修复**：① **失败原因可见**：`NpcHttpResult`/`NpcChatResult` 增加 `status` 字段（HTTP 状态码，0=网络层失败），`NpcHttpOnce` 填充、`NpcOnlineRoomChat` 透传、Start 探针输出 `NPC-ONLINE-RES ok=0 status=401` 等——用户复测一眼定位（最可能：key 未领取 glm-4.7-flash 免费资源包 → 403）；② **模型名可配**：`WOLF_NPC_MODEL` 环境变量（默认 `glm-4.7-flash`，§23.1 已规划本轮落地）——账号未开通免费模型可切 glm-4.6 等；③ **离线 NPC 智能化（纯 C++ 零依赖）**：性格系统（`NpcPersonaOf` FNV-1a %6：话痨/高冷/谨慎/幽默/毒舌/天然呆，纯函数并发安全）+ 对话记忆（Start Room `npcRecent`/`npcFacts`，chatMutex 保护，@ 行排除防复读）+ 事实引用（ME 池 12 变体，50% 概率）+ @ 语义分类（问句 QA 必答池 12 变体含答案词/挑衅 TA 怼人池/玩笑 JO 接梗池，`NpcClassifyAt` 纯规则）+ 零幻觉铁律（只引用原句不推理）；④ fake_ai body 读取竞态修复（`\r\n\r\n` 后补 300ms 收尾，T1-2 假 FAIL 根治）；⑤ round13 T8/T9 首夜屠边（4 人局约 25% 概率狼刀命中村民即狼胜、白天不到 → 局内 @/在线决策断言无样本）→ 改为最多 3 局重试。**回归**：round15 9/9、round13 43/43、round12 17/17、proto 60/60 全 PASS。**待办**：用户部署后①用「@NPC 34+128 等于多少」验证回复含 162（模型确被调用）；②看 `NPC-ONLINE-RES status=` 定位 4xx 具体原因；③Start 崩溃（0x71850）继续观察（round14 修复部署中，新 crash.log 有寄存器+栈可反推）。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
+> 上一轮（round15）：GLM 诊断修复（`NpcHttpResult.status` 字段 + `WOLF_NPC_MODEL` 可配）+ 离线 NPC 智能化（`NpcPersonaOf` 六性格 FNV-1a、`npcRecent`/`npcFacts` 记忆引用 ME 池、`NpcClassifyAt` 问句 QA/挑衅 TA/玩笑 JO 分类池），详见 REQUIREMENTS.md §24。
+>
+> 当前状态：**第十六轮（round16）：SHIT 彩蛋 + GLM 429 修复 + Server 崩溃自愈 + 离线 NPC Python 升级**。**本轮落地**：① **SHIT 彩蛋**（不写 HELP 的隐藏指令）：房内（Start）与游戏内白天（Server 投票窗口）均可 `SHIT <槽号|名字|*>`——向目标单播三行居中 💩（`  💩`/` 💩💩`/`💩💩💩`），发送方收回执「💩 已发给：<目标>」，`*` 全体（「💩 已发给：全体（N 人）」），非法目标 clean 提示；游戏内与 VOTE/BOMB/CHALLENGE 共存（ParseShitCommand 只认 SHIT/shit/Shit 前缀，不干扰其它命令）；② **GLM 429 限流**：`NpcHttpMutex` 单飞（任意时刻至多一个 HTTP 在途）+ 429 后 10s 冷却回退离线 + 请求/响应日志带 `url` 与 `status`；③ **Server 崩溃自愈**：`SetUnhandledExceptionFilter` 写 crash.log（时间戳 + 异常地址 + 32 项寄存器转储），崩溃现场可回溯（0x71850 待用户侧观察）；④ **离线 NPC Python 专业库升级（可选增强）**：`npc_nlp_server.py`（Python 3.13 + jieba，127.0.0.1:18082，POST /reply）——Start 启动自动探测：端口已监听或 `WOLF_NPC_NLP_URL` 已设则跳过，否则 CreateProcessW 拉起（无窗口，失败静默）；在线/离线 @ 优先调 NLP（超时 2s），失败 30s 冷却回退 C++ 模板（NpcRoomReplySmart）——无 Python 环境纯 C++ 模式不受影响；jieba 关键词嵌入 + 模板池与 C++ 逐字对齐（round15 断言兼容）。**回归**：round16 18/18、round15 9/9、round13 43/43、round12 17/17、proto 60/60 全 PASS。**待办**：用户部署后①复测 GLM 真实 key 200/429 是否消失（`WOLF_NPC_MODEL` 可切 glm-4.6 兜底）；②crash.log 0x71850 继续观察（崩溃自愈日志已部署）。状态更新与代码修复完成后，记得 git add + git commit 提交（AGENTS.md 更新也要一起提交）。
 
 ## 工作目录铁律（最重要）
 
@@ -57,6 +59,8 @@
 
 游戏：`VOTE <编号>`（短别名 `V`）：白天投票放逐（0=弃权）；`BOMB <编号>`（短别名 `B`）：白狼王白天自爆。
 
+隐藏彩蛋（不写 HELP）：`SHIT <槽号|名字|*>`——房内（Start）与游戏内白天（Server 投票窗口）均可；向目标单播三行居中 💩（`  💩`/` 💩💩`/`💩💩💩`），发送方收回执「💩 已发给：<目标>」；`*`=全体（回执「💩 已发给：全体（N 人）」）；非法目标 clean 提示重输；游戏内与 VOTE/BOMB/CHALLENGE 共存（ParseShitCommand 只认 SHIT/shit/Shit 前缀，不干扰其它命令）。
+
 **Start.exe 启动**：`Start.exe [端口]`；有参数用参数（非法直接中文报错退出）；**无参数时交互输入监听端口**（提示「请输入监听端口（1024-65535）：」，非法输出具体原因后重新输入，EOF 退出）；传给 Server.exe 的 startIp/startPort 用 Start 实际监听端口（非硬编码 8888，否则 Server 的 GAME_ENDED/RELEASE 回连丢失）。
 
 **游戏链路（真实协议）**：Start 开局时给每个已连接槽位分配 **gamePid=压缩名单序号 1..N**（槽位升序跳过未连接槽，Slot.gamePid 记录）并存入槽位；命令行按同序传 Server.exe，`GAME_PREPARE|port|roomId|ip|gamePid` 下发；客户端**直连游戏端口**并发 `PLAYER_ID|<gamePid>` 认领槽位（Server 的 playerId=名单位置 1..N，与 gamePid 一致——**槽位空洞时 GAME_PREPARE pid 必须用 gamePid 而非槽号+1**，否则张冠李戴）；开局广播 `PLAYER_LIST|<总数>|<名1>|...|<名N>`（名字=槽位序、含玩家总数头字段，Client 解析必须跳过头字段）。游戏内其他协议：`PING`（心跳保活行，Server 收到只刷新 lastSeen 并回一行 PING）、`GAME_ENDED|<roomId>`（Server 通知本局结束）、`RELEASE|<roomId>`（全部玩家失联时 Server 通知销毁房间、清空黑名单）、`__GAME_OVER__`（Server 收尾关连接前发的终态裸行，客户端据此判定「本局正常结束」直接回房、不进入重连流程）、`ROLE|<职业enName>`（身份私信）、`__DAY_OPEN__`/`__INPUT__`/`__CLS__`/`__PAUSE__` 等控制消息。`REJOIN|<roomId>|<playerId>` 的 playerId=开局分配的 gamePid：Start 按 `slots[i].gamePid == pid` 匹配回**原槽位**（含空洞局），匹配失败才回落空槽（不含槽 0）；房主保护 hostPid=1（槽 0 恒为名单首位）。兜底回滚（`WOLF_GAME_WAIT_SECONDS` 注入）只对「Server.exe 进程已死」生效——进程活着时房间保持 [游戏中]，善后交给 Server 自身 25s 开局超时 RELEASE。
@@ -81,6 +85,7 @@
 - `tests/round12_test.ps1` — **17 项**第十二轮验收（R1 房内 @离线 NPC 必答：单次恰一条/多样性/词嵌入；R2 普通聊天相关性：名字 85% 6试/话题词 30% 10试/纯闲聊 6% 上限 5 次；R3 两人名接话；R4 极端输入：超长/纯标点/管道注入/@不存在/进程存活；R5 在线 NPC 房内 @：AI 文本广播 + fake_chat 收到 REQ（重试兜底）+ NpcExtractText 干净解析；R6 无 key 回退离线；R7 短超时快速兜底；R8 单次 @ 恰一条回复无重复发声）。
 - `tests/round13_test.ps1` — **43 项**第十三轮验收（§23：T1/T2 在线 AI 接入与失败回退离线（fake_ai 验证 Authorization: Bearer + glm-4.7-flash 模型串）；T3/T4 槽位号/缩写提及必答；T5 禁言 NPC 修复；T6 主动发言（WOLF_NPC_PROACTIVE_MS）；T7 模板多样 distinct≥12；T8 局内白天被 @ 接话；T9 在线游戏内决策 HTTP；T10/T11 LEVEL3 设置与 4 人局（ROLE/夜晚/胜负/__GAME_OVER__，seed 1..15 扫描）；T12-T15 驯熊师咆哮、骑士挑战、狼美人殉情、乌鸦污票可观测）。T8/T9 段最多重试 3 局（4 人局约 25% 首夜屠边 → 白天不到 → 断言无样本，见坑 40）。
 - `tests/round15_test.ps1` — **9 项**第十五轮验收（§24：U1 话痨长度 > 高冷 +5 字节；U2 高冷全部 ≤40 字节；U3 问句答案词 ≥8/10；U4 挑衅怼词 ≥3/8；U5 播种「我是预言家」后记忆引用 ≥2/8；U6 零幻觉（6 次无不存在名字）；U7 在线无 key 回退智能离线不崩；U8 问句 distinct ≥3；键保护：运行前自动备份恢复用户 npc_key.bin）。
+- `tests/round16_test.ps1` — **18 项**第十六轮验收（§25：A 房内 SHIT 非法目标/名字/槽号/*/三行计数 + SHOW NPCKEY 显示未配置；B 游戏内白天 SHIT（4 人局直连：槽号/非法目标/全体（3 人）回执 + __GAME_OVER__，最多 3 局重试防首夜屠边）；C NLP 服务自动拉起（start.log spawn 记录）+ @NPC 回复 + npc_nlp.log 请求日志；D 杀服务回退 C++ 必答不崩）。
 
 运行方式（串行执行，输出文件仅作参考，以脚本 **exit code** 为准）：
 `powershell -NoProfile -ExecutionPolicy Bypass -File tests\xxx.ps1 *> tests\xxx_out.txt`
@@ -130,6 +135,9 @@
 39. **`SendToClient` 发送失败 closesocket 与在线线程构成双 close**：在线 NPC 回复线程（NpcRoomBroadcast→RoomMsg→SendToRoomMembers）与主循环可并发 send 同一大厅连接；线程 A send 失败 close 后句柄被系统回收，线程 B 又对该句柄 close → 误杀句柄复用的新连接。**修法：SendToClient send 失败只 Log 不 close，失败连接由主循环 select/recv 0 统一清理（延迟最多一个心跳周期）**——踢人等主动关闭路径不受影响。
 40. **fake_ai/fake_server 读 HTTP 请求 body 竞态（round13 T1-2 假 FAIL）**：npc_fake_ai.ps1 在收到 `\r\n\r\n`（header 结束）后立即进入 BODY 读取循环——WinHttp 分段发送（先发头后发体）时 body 断言偶发取到空串。**修法：header 结束标志出现后补 300ms 空闲窗口再读 body 余量**。
 41. **4 人局首夜屠边导致白天断言无样本（round13 T8-1/T9 偶发假 FAIL 根因）**：4 人局配置 1狼+0中立+2神+1村民时，村民槽位随机（1/4），狼刀命中村民即「村民全灭」狼胜、白天永远不到——约 25% 概率 T8（局内白天被 @ 接话）与 T9（在线决策）断言必然失败。**修法：T8/T9 段整体包重试循环，最多 3 局（每局新开杀角色重随机），任一局满足全部条件即 PASS**。
+42. **SDK 10.0.26100 起 `WinHttpGetLastError` 已从 winhttp.h 删除（round16 编译错）**：round15 里 npc_bot.h 用 `WinHttpGetLastError(hreq)` 在 19.51/旧 SDK 可编译，本机新 SDK 直接「未声明的标识符」——**修法：一律改用 `GetLastError()`**（WinHttp 错误码与 GetLastError 同源，见 winhttp.h 注释）。同时 round16 编译还踩了「`NpcHttpResult hr` 用前未声明」——函数体中部引用 `hr` 前先声明并初始化。
+43. **PowerShell 函数里 `Write-Output` 会被调用处的赋值吞掉（round16 冒烟调试教训）**：`$null = Func` / `$r = Func` 会消费函数**所有**管道输出——函数内想打印调试信息必须用 `Write-Host`（直接写控制台，不经管道）。
+44. **游戏内 SHIT 测试断言的目标槽号必须是对方（round16 B 段 3 连败根因）**：bot2（=2 号槽）发 `PLAYER_2|SHIT 2` 目标是**自己**（槽 2），回执是「💩 已发给：<自己的名字>」而非预期目标——**断言回执文本时，发送者与目标必须不同槽号**（`PLAYER_2|SHIT 1` → 回执「💩 已发给：BotHost」）；另注意游戏内 `SHIT *` 的 N=存活者总数（4 人局=3 人），与房内 2 人场景（1 人）不同。
 
 ## 需求规格（狼人杀版，作为验收依据）
 

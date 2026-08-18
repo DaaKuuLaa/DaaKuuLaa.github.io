@@ -973,15 +973,22 @@ void NpcRoomOnlineReplyThread(const string& roomId, const string& npcName,
                               bool atHit)
 {
     Log("NPC-ONLINE-REQ npc=" + npcName + " sender=" + senderName
-        + " url=" + NpcEnvOr("WOLF_NPC_API_URL", "(none)")
+        + " url=" + NpcApiUrl()
         + " key=" + (NpcResolveKey().empty() ? "(empty)" : "(set)"));
 
     NpcChatResult r = NpcOnlineRoomChat(npcName, senderName, content, atHit);
 
     // status 透传：ok=0 时能区分「4xx 被拒（key 无权限/模型不存在）」与
-    // 「网络层失败（status=0）」——用户报"调不通"先看这一行
+    // 「网络层失败（status=0）」，status=0 再看 winErr（12002=超时/12029=
+    // 连不上）；429=免费模型限流（已自动退避 5s 重试）。用户报"调不通"
+    // 先看这一行。text 过长截断防日志刷屏
+    string showText = r.text;
+
+    if (showText.size() > 200) showText = showText.substr(0, 200) + "...";
+
     Log(string("NPC-ONLINE-RES ok=") + (r.ok ? "1" : "0")
-        + " status=" + to_string(r.status) + " text=" + r.text);
+        + " status=" + to_string(r.status) + " err=" + to_string(r.winErr)
+        + " text=" + showText);
 
     lock_guard<mutex> lk(g_roomsMutex);
 
@@ -996,7 +1003,8 @@ void NpcRoomOnlineReplyThread(const string& roomId, const string& npcName,
 
     NpcMemSnapshot(room, mem, npcName);
 
-    string text = r.ok ? r.text : NpcRoomReplySmart(npcName, senderName, content, atHit, &mem);
+    // 回退路径同样优先 Python NLP（§25），服务不可用再落 C++ 模板
+    string text = r.ok ? r.text : NpcReplyWithNlp(npcName, senderName, content, atHit, &mem);
 
     NpcRoomBroadcast(room, npcName, text, GetTickCount64());
 }
@@ -1043,7 +1051,8 @@ void NpcRoomSpeak(Room* room, const string& npcName, bool npcOnline,
 
     NpcMemSnapshot(room, mem, npcName);
 
-    string text = NpcRoomReplySmart(npcName, senderName, content, atHit, &mem);
+    // 离线 NPC 发言：优先 Python NLP 服务（§25），不可用回退 C++ 模板
+    string text = NpcReplyWithNlp(npcName, senderName, content, atHit, &mem);
 
     NpcRoomBroadcast(room, npcName, text, GetTickCount64());
 }
@@ -2774,7 +2783,82 @@ void HandleCommand(SOCKET sock, const string& line)
 
     if (!cmd)
     {
-// 兜底：房间内视为聊天（聊天内容原样透传，名字前缀+全角冒号 §10.1）；
+// SHIT 彩蛋（不写 HELP）：SHIT <名字|槽号|*> ——向目标私发三行居中 💩
+        //（逐行单播，格式同聊天广播），发送方收到生效回执。目标解析与
+        // PICK 同规则：数字=槽号优先、名字 NameEquals 大小写不敏感、
+        // *=房内全体（除自己）。彩蛋不设权限，任何成员可用
+        if (upper == "SHIT" && room)
+        {
+            vector<int> targets;
+
+            if (argStr == "*")
+            {
+                for (int i = 0; i < MAX_PLAYERS; ++i)
+                {
+                    if (i != ci.slot && !room->slots[i].name.empty()) targets.push_back(i);
+                }
+            }
+            else if (!argStr.empty() && isdigit((unsigned char)argStr[0]))
+            {
+                int n = atoi(argStr.c_str());
+
+                if (n >= 1 && n <= MAX_PLAYERS && !room->slots[n - 1].name.empty())
+                {
+                    targets.push_back(n - 1);
+                }
+                else
+                {
+                    SendToClientL10n(sock, "ERROR|", "目标玩家不存在：%s（不是房内玩家的编号）", "Target not found: %s (not a member slot)", argStr.c_str());
+                    return;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < MAX_PLAYERS; ++i)
+                {
+                    if (room->slots[i].name.empty()) continue;
+
+                    if (NameEquals(room->slots[i].name, argStr))
+                    {
+                        targets.push_back(i);
+                        break;
+                    }
+                }
+
+                if (targets.empty())
+                {
+                    SendToClientL10n(sock, "ERROR|", "目标玩家不存在：%s", "Target not found: %s", argStr.c_str());
+                    return;
+                }
+            }
+
+            if (targets.empty())
+            {
+                SendToClientL10n(sock, "ERROR|", "没有可发送的对象", "No targets available");
+                return;
+            }
+
+            // 三行居中：全角 💩 占 2 列，以第三行（6 列）为基准逐行前补空格
+            static const char* SHIT_LINES[] = { "  💩", " 💩💩", "💩💩💩" };
+
+            for (size_t ti = 0; ti < targets.size(); ++ti)
+            {
+                for (int li = 0; li < 3; ++li)
+                {
+                    SendToClient(room->slots[targets[ti]].sock,
+                                 "ROOM_MSG|" + ci.name + "：" + SHIT_LINES[li]);
+                }
+            }
+
+            string who = (argStr == "*")
+                ? "全体（" + to_string((int)targets.size()) + " 人）"
+                : room->slots[targets[0]].name;
+
+            SendToClient(sock, "ROOM_MSG|💩 已发给：" + who);
+            return;
+        }
+
+        // 兜底：房间内视为聊天（聊天内容原样透传，名字前缀+全角冒号 §10.1）；
     // 禁言名单命中的玩家只收私发驳回、不广播（§20.4）
     if (room)
     {
@@ -4299,8 +4383,8 @@ void HandleCommand(SOCKET sock, const string& line)
         if (!room)
         {
             SendToClientL10n(sock, "ROOM_MSG|",
-                "SHOW 用法：SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE>——查看黑名单、比例、职业档位、村民开关、自动开局、本地用户与 NPC、禁言名单（LOOK 同效）",
-                "SHOW usage: SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE> - view ban list, ratio, role level, villager switch, auto-start, local users and NPCs, and the mute list (LOOK works too)");
+                "SHOW 用法：SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE|NPCKEY>——查看黑名单、比例、职业档位、村民开关、自动开局、本地用户与 NPC、禁言名单、AI key 配置（LOOK 同效）",
+                "SHOW usage: SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE|NPCKEY> - view ban list, ratio, role level, villager switch, auto-start, local users and NPCs, the mute list, and AI key config (LOOK works too)");
             return;
         }
 
@@ -4359,6 +4443,18 @@ void HandleCommand(SOCKET sock, const string& line)
             SendToClient(sock, string("ROOM_MSG|") + Txt(ci.lang,
                 string(room->villager ? "村民职业：已启用" : "村民职业：已禁用").c_str(),
                 string(room->villager ? "Villager role: enabled" : "Villager role: disabled").c_str()));
+            return;
+        }
+
+        if (sub == "NPCKEY")
+        {
+            // 在线 NPC 配置状态（§25）：key 是否已配置 + 模型名 + 实际
+            // API 地址——排查"调不通"先看这里：key=(set) 且地址正确说明
+            // 网络与配置都没问题，剩下的看 start.log 的 NPC-ONLINE-RES
+            string keyState = NpcResolveKey().empty() ? "未配置" : "已配置";
+
+            SendToClient(sock, string("ROOM_MSG|AI key：") + keyState +
+                "｜模型：" + NpcModelName() + "｜API：" + NpcApiUrl());
             return;
         }
 
@@ -4457,8 +4553,8 @@ void HandleCommand(SOCKET sock, const string& line)
         }
 
         SendToClientL10n(sock, "ROOM_MSG|",
-            "SHOW 用法：SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE>——查看黑名单、比例、职业档位、村民开关、自动开局、本地用户与 NPC、禁言名单（LOOK 同效）",
-            "SHOW usage: SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE> - view ban list, ratio, role level, villager switch, auto-start, local users and NPCs, and the mute list (LOOK works too)");
+            "SHOW 用法：SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE|NPCKEY>——查看黑名单、比例、职业档位、村民开关、自动开局、本地用户与 NPC、禁言名单、AI key 配置（LOOK 同效）",
+            "SHOW usage: SHOW <BAN|RATIO|LEVEL|VILLAGER|AUTO|ADD|MUTE|NPCKEY> - view ban list, ratio, role level, villager switch, auto-start, local users and NPCs, the mute list, and AI key config (LOOK works too)");
         return;
     }
 
@@ -5212,6 +5308,52 @@ static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* ep)
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// §25：自动拉起离线 NLP 服务（npc_nlp_server.py，jieba 增强 NPC 回复）。
+// 探测 18082 已监听（服务已在跑/被测试占用）或 python 不可用都静默跳过——
+// NPC 回复走 C++ 模板回退，零感知。端口与 npc_nlp_server.py 保持一致；
+// 用户自定义 WOLF_NPC_NLP_URL 时也跳过（指向外部服务，不归我们管）
+void StartNlpServerIfNeeded()
+{
+    const char* e = getenv("WOLF_NPC_NLP_URL");
+
+    if (e && *e) return;
+
+    SOCKET probe = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+    if (probe != INVALID_SOCKET)
+    {
+        sockaddr_in sa = { 0 };
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons(18082);
+        sa.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+        if (connect(probe, (sockaddr*)&sa, sizeof(sa)) == 0)
+        {
+            closesocket(probe);
+            return;
+        }
+
+        closesocket(probe);
+    }
+
+    wstring cmd = L"python npc_nlp_server.py";
+    wchar_t* buf = _wcsdup(cmd.c_str());
+
+    if (!buf) return;
+
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = { 0 };
+
+    if (CreateProcessW(NULL, buf, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+    {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        Log("NLP server spawn ok (python npc_nlp_server.py)");
+    }
+
+    free(buf);
+}
+
 int main(int argc, char* argv[])
 {
     DisableConsoleQuickEdit();
@@ -5283,6 +5425,8 @@ int main(int argc, char* argv[])
         system("pause > nul");
         return 1;
     }
+
+    StartNlpServerIfNeeded();
 
     g_listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (g_listenSock == INVALID_SOCKET)

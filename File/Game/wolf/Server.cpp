@@ -67,6 +67,75 @@ void GLog(const string& msg)
 
 // ============ 全局配置与游戏状态 ============
 
+// 崩溃兜底：任何未处理异常/访问违例都写 crash.log（SEH 在栈破坏等场景也
+// 能触发）。Start 已有同款 handler；Server 没有时会"无痕退出"——用户侧
+// 症状是房间消失/客户端突然连不上（Start 兜底回滚），没有落盘证据只能猜。
+// 日志字段与 Start 版一致（时间戳/线程/异常码/地址/模块偏移/寄存器/栈顶
+// 24 QWORD），配合 Server.map 反推崩溃位置
+static LONG WINAPI CrashDumpHandler(EXCEPTION_POINTERS* ep)
+{
+    FILE* f = nullptr;
+    fopen_s(&f, "crash.log", "a");
+
+    if (f)
+    {
+        HMODULE hMod = nullptr;
+
+        if (ep && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                     (LPCSTR)ep->ExceptionRecord->ExceptionAddress, &hMod))
+        {
+            fprintf(f, "[%llu] thread=%lu code=%08x addr=%p mod=%p offset=%p\n",
+                    (unsigned long long)GetTickCount64(),
+                    (unsigned long)GetCurrentThreadId(),
+                    ep->ExceptionRecord->ExceptionCode,
+                    ep->ExceptionRecord->ExceptionAddress,
+                    (void*)hMod,
+                    (void*)((char*)ep->ExceptionRecord->ExceptionAddress - (char*)hMod));
+
+            if (ep->ContextRecord)
+            {
+                const CONTEXT* c = ep->ContextRecord;
+                fprintf(f, "  rip=%p rsp=%p rbp=%p rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p\n",
+                        (void*)c->Rip, (void*)c->Rsp, (void*)c->Rbp,
+                        (void*)c->Rax, (void*)c->Rbx, (void*)c->Rcx, (void*)c->Rdx,
+                        (void*)c->Rsi, (void*)c->Rdi);
+                fprintf(f, "  r8=%p r9=%p r10=%p r11=%p r12=%p r13=%p r14=%p r15=%p\n",
+                        (void*)c->R8, (void*)c->R9, (void*)c->R10, (void*)c->R11,
+                        (void*)c->R12, (void*)c->R13, (void*)c->R14, (void*)c->R15);
+                fprintf(f, "  stack:");
+
+                ULONG_PTR* sp = (ULONG_PTR*)c->Rsp;
+
+                for (int i = 0; i < 24; ++i)
+                {
+                    __try
+                    {
+                        fprintf(f, " %p", (void*)sp[i]);
+                    }
+                    __except (EXCEPTION_EXECUTE_HANDLER)
+                    {
+                        fprintf(f, " <bad>");
+                        break;
+                    }
+                }
+
+                fprintf(f, "\n");
+            }
+        }
+        else
+        {
+            fprintf(f, "[%llu] thread=%lu code=%08x addr=%p\n", (unsigned long long)GetTickCount64(),
+                    (unsigned long)GetCurrentThreadId(),
+                    ep ? ep->ExceptionRecord->ExceptionCode : 0,
+                    ep ? ep->ExceptionRecord->ExceptionAddress : nullptr);
+        }
+
+        fclose(f);
+    }
+
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 // 由命令行尾部参数解析而来：三方人数 / 档位 / 村民开关
 int g_numPlayers = 0;        // 实际人数 N（2..MAX_PLAYERS）
 int g_wolfCount = 0;         // 狼人人数
@@ -2929,6 +2998,75 @@ bool ParseBombCommand(const string& content, int& target)
     return true;
 }
 
+// 解析 SHIT 彩蛋命令（不写 HELP）：SHIT n / SHIT * / SHIT <名字>。
+// 返回 true 时 target 语义：0=全体（*）、1..N=槽位；名字解析在调用处
+// 完成（需要 g_players 名表）。与投票命令共存于白天输入：内容以
+// SHIT 开头才进本函数，普通聊天不受影响
+bool ParseShitCommand(const string& content, int& target)
+{
+    string line = content;
+
+    for (char& ch : line)
+    {
+        if (ch == '|') ch = ' ';
+    }
+
+    vector<string> tok = SplitTokens(line);
+
+    if (tok.empty()) return false;
+
+    if (tok[0] != "SHIT" && tok[0] != "shit" && tok[0] != "Shit") return false;
+
+    if (tok.size() < 2) return false;
+
+    if (tok[1] == "*")
+    {
+        target = 0;
+        return true;
+    }
+
+    bool allDigits = true;
+
+    for (char c : tok[1])
+    {
+        if (!isdigit((unsigned char)c))
+        {
+            allDigits = false;
+            break;
+        }
+    }
+
+    if (allDigits)
+    {
+        target = atoi(tok[1].c_str());
+        return true;
+    }
+
+    // 名字：匹配本局任一玩家（大小写不敏感，与房内 NAME 规则一致）；
+    // 匹配不到时返回 0 但置"名字模式"，调用处用 0 区分（0 也是 * 的
+    // 返回值，因此调用处必须先查名字命中再判断 *）
+    for (int i = 1; i <= g_numPlayers; ++i)
+    {
+        if (NameEquals(g_players[i].name, tok[1]))
+        {
+            target = i;
+            return true;
+        }
+    }
+
+    target = -1;
+    return true;
+}
+
+// 三行居中 💩（彩蛋 §25）：全角 💩 占 2 列，以第三行（6 列）为基准
+// 逐行前补空格；Start 房内版与 Server 局内版共用同一排版
+const char* ShitLine(int lineNo)
+{
+    static const char* L[] = { "  💩", " 💩💩", "💩💩💩" };
+
+    return (lineNo >= 0 && lineNo < 3) ? L[lineNo] : "";
+}
+
 // 骑士挑战命令（§23.5）：CHALLENGE <槽号>（短别名 CJ/挑战）。
 // 只有骑士本人可用；解析成功返回 true（target 为槽号）
 bool ParseChallengeCommand(const string& content, int& target)
@@ -3188,6 +3326,53 @@ bool GatherDayVotes(int& exiled, int& bombTarget, int& challengeTarget)
                 SendToClientL10n(from + 1, "自爆目标不合法：必须是 1..N 的存活玩家且不能是自己。请重新输入。", "Invalid bomb target: an alive player 1..N, not yourself. Try again.");
                 continue;
             }
+        }
+
+        // SHIT 彩蛋（不写 HELP）：SHIT <槽号|名字|*>——向目标单播三行
+        // 居中 💩（不走聊天广播，仅目标可见），发送方收到生效回执；
+        // 目标不存在与投票/自爆同样提示重输。死亡玩家连接仍在时照发
+        //（观战可见），SendToClient 对未连接槽位静默跳过
+        int shitT = -2;
+
+        if (ParseShitCommand(content, shitT))
+        {
+            if (shitT < 0)
+            {
+                SendToClientL10nPair(slot, "SHIT 目标不存在：必须是 1..N 的玩家编号、玩家名或 *。", "SHIT target not found: a player slot 1..N, a name, or *.");
+                continue;
+            }
+
+            string targetDesc;
+
+            if (shitT == 0)
+            {
+                for (int i = 1; i <= g_numPlayers; ++i)
+                {
+                    if (i == slot) continue;
+
+                    SendToClient(i - 1, g_players[slot].name + "：" + ShitLine(0));
+                    SendToClient(i - 1, g_players[slot].name + "：" + ShitLine(1));
+                    SendToClient(i - 1, g_players[slot].name + "：" + ShitLine(2));
+                }
+
+                targetDesc = "全体（" + to_string(g_numPlayers - 1) + " 人）";
+            }
+            else
+            {
+                if (shitT < 1 || shitT > g_numPlayers)
+                {
+                    SendToClientL10nPair(slot, "SHIT 目标不存在：必须是 1..N 的玩家编号、玩家名或 *。", "SHIT target not found: a player slot 1..N, a name, or *.");
+                    continue;
+                }
+
+                SendToClient(shitT - 1, g_players[slot].name + "：" + ShitLine(0));
+                SendToClient(shitT - 1, g_players[slot].name + "：" + ShitLine(1));
+                SendToClient(shitT - 1, g_players[slot].name + "：" + ShitLine(2));
+                targetDesc = g_players[shitT].name;
+            }
+
+            SendToClientL10nPair(slot, "💩 已发给：" + targetDesc, "💩 sent to: " + targetDesc);
+            continue;
         }
 
         // 骑士挑战（§23.5）：只限骑士本人、白天投票窗口内、全局限一次。
@@ -3767,6 +3952,9 @@ string WideToUtf8Local(const wstring& w)
 
 int main(int argc, char* argv[])
 {
+    // 崩溃落盘兜底必须在任何可能抛异常的初始化之前注册（main 最早）
+    SetUnhandledExceptionFilter(CrashDumpHandler);
+
     DisableConsoleQuickEdit();
     SetConsoleUtf8();
     Log("狼人杀游戏服务器启动...");

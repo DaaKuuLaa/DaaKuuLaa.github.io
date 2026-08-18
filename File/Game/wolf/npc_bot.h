@@ -33,6 +33,12 @@
 #ifndef WOLF_NPC_BOT_H
 #define WOLF_NPC_BOT_H
 
+// WinHttpGetLastError 已被较新 SDK（10.0.26100）移除，WinHttp 失败
+// 统一用 GetLastError 取错误码（ERROR_WINHTTP_TIMEOUT=12002 等，等价诊断）
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
+
 #include "common.h"
 
 #include <winhttp.h>
@@ -2126,12 +2132,14 @@ inline string NpcProactiveLine(const string& topic, const string& selfName)
 }
 
 // 在线对话调用结果：ok=拿到回复文本；text=发言（已限长净化）；
-// status=透传 HTTP 状态码（0=网络层失败），仅诊断用，调用方不依赖
+// status=透传 HTTP 状态码（0=网络层失败），仅诊断用，调用方不依赖；
+// winErr=WinHttp/连接层错误码（status=0 时用于区分超时/拒绝/解析失败）
 struct NpcChatResult
 {
     bool ok;
     string text;
     int status;
+    int winErr;
 };
 
 // 从模型响应提取纯发言文本：与 NpcExtractAction 同套路但容错更宽——
@@ -2182,6 +2190,7 @@ struct NpcHttpResult
     bool retryable;
     int status;
     string body;
+    int winErr;
 };
 
 // 从 JSON 文本的冒号位置读取字符串值（处理 \" \\ \n \r \t \uXXXX 转义）。
@@ -2319,6 +2328,7 @@ inline NpcHttpResult NpcHttpOnce(const string& url, const string& reqHeaders,
     r.ok = false;
     r.retryable = false;
     r.status = 0;
+    r.winErr = 0;
 
     size_t schemeEnd = url.find("://");
 
@@ -2341,13 +2351,18 @@ inline NpcHttpResult NpcHttpOnce(const string& url, const string& reqHeaders,
     HINTERNET hSession = WinHttpOpen(L"wolf-npc/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
 
-    if (!hSession) return r;
+    if (!hSession)
+    {
+        r.winErr = (int)GetLastError();
+        return r;
+    }
 
     HINTERNET hConnect = WinHttpConnect(hSession, NpcToWide(host).c_str(),
                                         (INTERNET_PORT)port, 0);
 
     if (!hConnect)
     {
+        r.winErr = (int)GetLastError();
         WinHttpCloseHandle(hSession);
         return r;
     }
@@ -2359,6 +2374,7 @@ inline NpcHttpResult NpcHttpOnce(const string& url, const string& reqHeaders,
 
     if (!hRequest)
     {
+        r.winErr = (int)GetLastError();
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return r;
@@ -2418,7 +2434,9 @@ inline NpcHttpResult NpcHttpOnce(const string& url, const string& reqHeaders,
     }
     else if (!sent || !gotResponse)
     {
-        // 连不上/超时是网络层失败，值得稍后重试
+        // 连不上/超时是网络层失败，值得稍后重试；记录错误码供诊断
+        // （WinHttp 超时 ERROR_WINHTTP_TIMEOUT=12002 / 无法连接 12029 等）
+        r.winErr = (int)GetLastError();
         r.retryable = true;
     }
     else if (status == 429 || status == 500 || status == 502 || status == 503 || status == 504)
@@ -2653,13 +2671,32 @@ inline string NpcModelName()
     return NpcEnvOr("WOLF_NPC_MODEL", "glm-4.7-flash");
 }
 
+// API 地址：环境变量 WOLF_NPC_API_URL 覆盖（测试注入本地假服务器用），
+// 缺省官方智谱端点。统一入口避免各处硬编码默认值不一致——日志/SHOW
+// 显示实际生效地址时也用本函数，杜绝"显示 (none) 实际在调默认地址"误导
+inline string NpcApiUrl()
+{
+    return NpcEnvOr("WOLF_NPC_API_URL",
+                    "https://open.bigmodel.cn/api/paas/v4/chat/completions");
+}
+
+// NPC HTTP 全局互斥（进程内单飞）：Start 在线回复线程、Server 在线决策
+// 可能同时发起请求；免费 glm-4.7-flash 并发连接会 429。各调用点必须持有
+// 本锁再做网络调用（Sleep 退避也在锁内，保证同一时刻至多一个请求在飞）
+inline mutex& NpcHttpMutex()
+{
+    static mutex m;
+    return m;
+}
+
 // 在线决策总入口：读环境变量覆盖（URL/KEY/超时/重试次数），组装请求体，
-// 重试退避 2s/4s；任何一步失败都返回空串由调用方回退离线逻辑。
-// 阻塞时长上限 = (重试次数+1) × 超时 + 退避，必须同步但不可无限卡死
+// 重试退避 2s/4s（429 限流退避 5s）；任何一步失败都返回空串由调用方回退
+// 离线逻辑。阻塞时长上限 = (重试次数+1) × 超时 + 退避，必须同步但不可无限卡死。
+// 全局互斥 NpcHttpMutex：同一时刻只允许一个 NPC HTTP 请求在飞——免费模型
+// 对并发连接限流很严（实测并发两次 @ 直接 429），串行化后限流概率大降
 inline string NpcOnlineDecide(const NpcContext& ctx)
 {
-    string url = NpcEnvOr("WOLF_NPC_API_URL",
-                          "https://open.bigmodel.cn/api/paas/v4/chat/completions");
+    string url = NpcApiUrl();
 
     // key 不写死在源码：env > DPAPI 文件，都没有就回退离线（调用方已提示）
     string key = NpcResolveKey();
@@ -2674,6 +2711,8 @@ inline string NpcOnlineDecide(const NpcContext& ctx)
         + NpcJsonEscape(NpcBuildUserText(ctx))
         + "\"}],\"temperature\":0.7}";
     string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + key;
+
+    lock_guard<mutex> g(NpcHttpMutex());
 
     for (int attempt = 0; attempt <= retries; ++attempt)
     {
@@ -2701,9 +2740,9 @@ inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& send
 
     r.ok = false;
     r.status = 0;
+    r.winErr = 0;
 
-    string url = NpcEnvOr("WOLF_NPC_API_URL",
-                          "https://open.bigmodel.cn/api/paas/v4/chat/completions");
+    string url = NpcApiUrl();
     string key = NpcResolveKey();
 
     if (key.empty()) return r;
@@ -2728,14 +2767,22 @@ inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& send
         + NpcJsonEscape(usr) + "\"}],\"temperature\":0.9}";
     string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + key;
 
+    // 房内对话同一时刻只放一个请求（并发 @ 免费模型会被 429 限流）
+    lock_guard<mutex> g(NpcHttpMutex());
+
+    NpcHttpResult hr;
+
     for (int attempt = 0; attempt <= retries; ++attempt)
     {
-        if (attempt > 0) Sleep((attempt == 1 ? 2 : 4) * 1000);
+        // 429 限流：等 5s 再重试（智谱免费模型 RPM 很小，紧挨着重试必二次 429）
+        if (attempt > 0) Sleep(((hr.status == 429) ? 5 : (attempt == 1 ? 2 : 4)) * 1000);
 
-        NpcHttpResult hr = NpcHttpOnce(url, headers, body, timeoutSec);
+        hr = NpcHttpOnce(url, headers, body, timeoutSec);
 
-        // 透传状态码：调用方日志打印诊断"调不通"是 4xx 拒绝还是网络层
+        // 透传状态码与连接层错误码：调用方日志打印诊断"调不通"是 4xx
+        // 拒绝、限流还是网络层（超时/连不上）失败
         r.status = hr.status;
+        r.winErr = hr.winErr;
 
         if (hr.ok)
         {
@@ -2945,6 +2992,81 @@ inline NpcNeuralResult NpcNeuralScore(const vector<string>& npcNames,
     }
 
     return r;
+}
+
+// 房内 NPC 回复总入口（Start 调用，§25）：优先走 Python NLP 服务
+//（npc_nlp_server.py：jieba 分词 + 语义分类 + 记忆引用，模板池与 C++ 对齐），
+// 服务不可用（未启动/超时/解析空）自动回退 C++ 内置智能模板——无 Python
+// 环境时行为与 round15 完全一致（零感知回退）。失败冷却 30s：本机服务
+// 不在时避免每次回复都白等一次 HTTP 超时。HTTP 超时 2s 内快速失败
+inline string NpcReplyWithNlp(const string& npcName, const string& senderName,
+                              const string& content, bool atHit, const NpcMemCtx* mem)
+{
+    static mutex cm;
+    static bool dead = false;
+    static ULONGLONG deadUntil = 0;
+
+    string url = NpcEnvOr("WOLF_NPC_NLP_URL", "http://127.0.0.1:18082/reply");
+
+    if (!url.empty())
+    {
+        bool skip = false;
+
+        {
+            lock_guard<mutex> lk(cm);
+
+            if (dead && GetTickCount64() < deadUntil) skip = true;
+        }
+
+        if (!skip)
+        {
+            string body = "{\"npc\":\"" + NpcJsonEscape(npcName)
+                + "\",\"sender\":\"" + NpcJsonEscape(senderName)
+                + "\",\"content\":\"" + NpcJsonEscape(content)
+                + "\",\"at\":" + (atHit ? "true" : "false")
+                + ",\"recent\":[";
+
+            if (mem)
+            {
+                for (size_t i = 0; i < mem->recentEvents.size(); ++i)
+                {
+                    if (i > 0) body += ",";
+
+                    body += "\"" + NpcJsonEscape(mem->recentEvents[i].first + "：" + mem->recentEvents[i].second) + "\"";
+                }
+            }
+
+            body += "],\"facts\":[";
+
+            if (mem)
+            {
+                for (size_t i = 0; i < mem->facts.size(); ++i)
+                {
+                    if (i > 0) body += ",";
+
+                    body += "\"" + NpcJsonEscape(mem->facts[i]) + "\"";
+                }
+            }
+
+            body += "],\"persona\":" + to_string((int)NpcPersonaOf(npcName)) + "}";
+
+            NpcHttpResult hr = NpcHttpOnce(url, "Content-Type: application/json\r\n", body, 2);
+
+            if (hr.ok)
+            {
+                string t = NpcExtractText(hr.body);
+
+                if (!t.empty()) return t;
+            }
+
+            lock_guard<mutex> lk(cm);
+            dead = true;
+            deadUntil = GetTickCount64() + 30000;
+        }
+    }
+
+    // 回退 C++ 智能模板（行为与 round15 一致：性格/记忆/分类/零幻觉）
+    return NpcRoomReplySmart(npcName, senderName, content, atHit, mem);
 }
 
 #endif // WOLF_NPC_BOT_H

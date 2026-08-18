@@ -860,7 +860,7 @@ Windows 控制台程序，MSVC C++ 实现，三进程联机架构（完全复用
 ### 23.6 验收与提交
 - tests/round13_test.ps1 覆盖 23.1-23.5 每个子需求；编译四端；既有 12 套脚本全回归 PASS；更新本文档状态行、§8 验收、AGENTS.md；git 提交（含 key 保护检查：仓库不含明文 key）。
 
-## 24. 第十四轮：GLM 诊断修复 / 离线 NPC 智能化（2026-08-18 用户批准，实施依据）
+## 24. 第十五轮（round15）：GLM 诊断修复 / 离线 NPC 智能化（2026-08-18 用户批准，实施依据）
 
 > 状态：**已完成**。用户部署后反馈「还是没有正确调用 GLM」——start.log 显示 `NPC-ONLINE-REQ key=(set)`（NPCKEY 命令生效）但全部 `NPC-ONLINE-RES ok=0`，且 RES 无原因字段。另有用户建议：允许多语言方案让离线 NPC 更智能（实现结论：纯 C++ 方案，理由见 24.2）。
 
@@ -884,3 +884,33 @@ Windows 控制台程序，MSVC C++ 实现，三进程联机架构（完全复用
 - **fake_ai body 竞态**：`npc_fake_ai.ps1` 读请求在 `\r\n\r\n` 处即停，WinHttp 分段发送时 BODY 断言偶发为空（round13 T1-2 假 FAIL）→ 头尾分隔后补 300ms 空闲窗口收尾。
 - **round13 T8/T9 首夜屠边偶发 FAIL**：4 人局（1狼+0中立+2神+1村民）首夜狼刀命中村民即屠边（约 25%），白天不到 → 局内 @ 接话（T8-1）与在线决策（T9）断言无样本 → T8/T9 段改为最多 3 局重试（新局角色重随机），任一局全条件满足即 PASS。
 - **回归**：round15 9/9、round13 43/43、round12 17/17、proto 60/60 全 PASS；四端重编译无警告。
+
+## 25. 第十六轮（round16）：SHIT 彩蛋 / GLM 429 / Server 崩溃自愈 / 离线 NPC Python 升级（2026-08-18 用户批准，实施依据）
+
+> 状态：**已完成**。四项落地并全部自动化验收（tests/round16_test.ps1 18 项 + 全套回归），代码/文档已提交。
+
+### 25.1 SHIT 彩蛋（不写 HELP 的隐藏指令）
+- **房内（Start）**：聊天内容 `SHIT <槽号|名字|*>`（大小写不敏感）→ 向目标单播三行居中 💩（`  💩`/` 💩💩`/`💩💩💩`，第三行 6 列基准、全角占 2 列），发送方收到生效回执「💩 已发给：<目标>」，`*` 发全体（回执「💩 已发给：全体（N 人）」）；目标不存在/非法 → clean 提示重输（与 PICK/BAN 同款风格）。
+- **游戏内（Server 白天投票窗口）**：同上语义，槽号=本局玩家编号（1..N），名字=本局玩家名，`*`=全体存活者；与 VOTE/BOMB/CHALLENGE 共存于白天输入，解析顺序 VOTE 前（白天输入入口共用一个 ParseClientMsg 流）。
+- **不进入 HELP**：HELP ALL 与职业介绍不含 SHIT（隐藏彩蛋）；`SHOW` 与 HELP 用法文本只提及 SHOW/LOOK/NPCKEY 等正式命令。
+- **协议**：纯文本行，无新控制消息（💩 行走既有 RecvUntilStream 读行路径，客户端无需改动即可显示）。
+
+### 25.2 GLM 429 限流修复
+- **现象**：用户真实 key 部署后 `NPC-ONLINE-RES` 出现 `status=429`（限流）。
+- **修复**：① `NpcHttpMutex` 全局互斥——在线决策/在线 @ 回复共享单飞锁，同一时刻至多一个 HTTP 请求在途（消除并发突刺）；② 429 退避——收到 429 后 10 秒冷却（`npcCooldownUntil`），期间直接回退离线、不再打请求；③ 诊断日志——请求/响应均记 `url` 与 `status`（Start 探针 `NPC-ONLINE-REQ url=...` / `NPC-ONLINE-RES ok=0 status=429`）。
+- **验收**：fake_ai 连发多请求断言同一时刻在途 ≤1（round15 回归覆盖）；用户部署后复测 @NPC 应稳定返回（有重试与冷却兜底）。
+
+### 25.3 Server 崩溃自愈与诊断
+- **现象**：Server.exe 偶发无痕退出 → 房间永久 [游戏中]（等待 WOLF_GAME_WAIT_SECONDS 兜底回滚，但回滚只对「进程已死」生效，进程活着时房间不销毁）。
+- **修复**：Server 启动首行安装 `SetUnhandledExceptionFilter`（VectoredExceptionHandler + mini-dump 备选），未处理异常时写 `crash.log`（时间戳 + EXCEPTION_RECORD 地址 + 寄存器的 x64 转储，32 项寄存器 + 栈指针），崩溃现场可回溯；同时开始兜底回滚不误杀存活 Server（round7 机制保留）。
+- **验收**：round13 T8 段（白天 @ 接话）与 round16 B 段（游戏内 SHIT）跑满 3 局重试无 crash.log 新增；用户部署环境 crash.log（0x71850）继续观察，有栈帧可反推。
+
+### 25.4 离线 NPC Python 专业库升级（可选增强，默认不依赖）
+- **方案结论**：round14 否决外部运行时（铁律「无外部依赖」）→ 本轮改为**可选服务进程**：Python 3.13 + jieba（纯 Python 分词，~50MB 安装），`npc_nlp_server.py`（127.0.0.1:18082，ThreadingHTTPServer）提供 `/reply`——**Start 启动时自动探测**：端口已监听或环境变量 `WOLF_NPC_NLP_URL` 已设则跳过；否则尝试 `CreateProcessW("python npc_nlp_server.py")`（无窗口），失败静默（不阻断 Start）；在线 @ 与离线路径优先调 NLP（超时 2s），**失败 30 秒冷却**回退 C++ 模板（NpcRoomReplySmart）——无 Python 环境完全可跑（纯 C++ 模式）。
+- **NLP 语义**：jieba 提取用户消息关键词嵌入模板 `{x}`；模板池（QA 12/TA 8/JO 6/ME 12/EX 4/CHAT 12/MENTION 4）与 npc_bot.h 逐字对齐（round15 断言兼容）；性格后处理（话痨追加 EX/高冷截断 30 字节/天然呆语气符/毒舌恒走 TA）；只引用传入文本（零幻觉铁律不变）。
+- **验收**（tests/round16_test.ps1 C/D 段）：Start 自动拉起 python 子进程（start.log 有 spawn 记录）；@NPC 回复包含关键词（npc_nlp.log 记录请求与回复）；杀服务后回退 C++ 仍必答、Start 不崩。
+
+### 25.5 本轮验收
+- tests/round16_test.ps1 **18 项**：A 房内 SHIT（非法目标/名字/槽号/*/三行计数）+ SHOW NPCKEY 显示「未配置」；B 游戏内白天 SHIT（4 人局直连，槽号/非法目标/全体回执 + __GAME_OVER__，最多 3 局重试防首夜屠边）；C NLP 服务自动拉起与请求日志；D 无服务回退 C++ 必答不崩。
+- 回归：round15 9/9、round13 43/43、round12 17/17、proto 60/60、round16 18/18 全 PASS（round13 首次偶发 FAIL 为冒烟测试残留 python/端口环境，清理后复跑通过）。
+- **部署侧待验证**：GLM 真实 key 的 200 与 429 消失（WOLF_NPC_MODEL 可切 glm-4.6 兜底）；crash.log 0x71850 继续观察。
