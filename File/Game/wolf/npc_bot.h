@@ -1156,7 +1156,35 @@ inline string NpcPickWord(const string& content)
 
         w += c;
 
-        if (w.size() >= 16) break;
+        if (w.size() >= 16)
+        {
+            // 16 字节上限可能切在多字节 UTF-8 码点中间：从尾部回退，
+            // 丢弃半个码点（孤首字节或缺续字节的残码点），否则回复里
+            // 会出现半个汉字（显示为 ?，round13 T7 乱码根因）
+            while (w.size() > 0)
+            {
+                unsigned char last = (unsigned char)w.back();
+
+                if (last <= 0x7F) break;
+
+                size_t i = w.size() - 1;
+
+                while (i > 0 && ((unsigned char)w[i] & 0xC0) == 0x80) --i;
+
+                unsigned char h = (unsigned char)w[i];
+                size_t len = 1;
+
+                if (h >= 0xF0) len = 4;
+                else if (h >= 0xE0) len = 3;
+                else if (h >= 0xC0) len = 2;
+
+                if (w.size() - i >= len) break;
+
+                w.resize(i);
+            }
+
+            break;
+        }
     }
 
     return w;
@@ -1197,7 +1225,8 @@ inline string NpcResultWord(const string& raw)
     return "金水";
 }
 
-// 预言家报验人模板（8 变体随机）
+// 预言家报验人模板（10 变体随机：8 条公开报验 + 2 条隐瞒——白天不是
+// 每次都会跳身份交底，狼人也无法凭"必跳"锁定预言家，见 §26 隐瞒需求）
 inline string NpcSeerReport(const string& n, const string& name, const string& res)
 {
     static const char* const V[] = {
@@ -1209,9 +1238,11 @@ inline string NpcSeerReport(const string& n, const string& name, const string& r
         "悄悄说一句：我验了{n}号{name}，结果是{res}。",
         "验人结果出来了：{name}（{n}号）是{res}，情报量还可以。",
         "我昨晚查验了{n}号，{name}，{res}。这轮信息我先亮出来。",
+        "昨晚的信息我心里有数了，白天先不急着报。",
+        "验人结果我有数，但现在是白天，先放放再说。",
     };
 
-    return NpcFill(V[NpcRandInt(0, 7)], n, name, res, "");
+    return NpcFill(V[NpcRandInt(0, 9)], n, name, res, "");
 }
 
 // 首日发言模板（8 变体随机；第一天没信息，只表水不带节奏）。
@@ -1847,6 +1878,25 @@ inline NpcPersona NpcPersonaOf(const string& npcName)
     return (NpcPersona)(h % 6);
 }
 
+// 身份底牌敏感判定：内容涉及"自报身份/问身份/查杀验人"等底牌词时
+// 为敏感——NPC 被问底牌时部分概率隐瞒或误导（§26），避免一问问穿。
+// 注意与 python 的 ID_SECRET_WORDS 逐字对齐；不用单字"狼/验"
+//（"谁是狼""验证"会误伤），只用身份词全称
+inline bool NpcIdentitySensitive(const string& s)
+{
+    static const char* const W[] = {
+        "我是", "预言家", "女巫", "守卫", "猎人", "丘比特", "狼人", "村民",
+        "身份", "查杀", "验人", "验了", "跳身份", "是狼", "金水", "底牌",
+    };
+
+    for (size_t i = 0; i < sizeof(W) / sizeof(W[0]); ++i)
+    {
+        if (s.find(W[i]) != string::npos) return true;
+    }
+
+    return false;
+}
+
 // @ 内容语义分类：问句 > 挑衅 > 玩笑 > 陈述（纯规则，不依赖外部库）
 enum AtKind { K_QUESTION, K_TAUNT, K_JOKE, K_STATEMENT };
 
@@ -1956,6 +2006,19 @@ inline string NpcRoomReplySmart(const string& npcName, const string& senderName,
         "顺带一提，{某名}今天有点安静。",
         "话说回来，{某名}你觉得呢？",
     };
+    // 身份隐瞒池 8 变体：被问及身份/查杀等底牌问题时部分概率拒绝交底
+    //（隐瞒，不暴露），其余概率仍走原逻辑（记忆引用可能承认）——
+    // "不总是如实说出"，玩家无法用一问问穿 NPC 底牌（§26）
+    static const char* const HI[] = {
+        "这个嘛，身份的事先不急着谈。",
+        "你猜，反正我不说。",
+        "身份？我暂时不想透露，看后面表现。",
+        "这个话题先放一放，现在说没意思。",
+        "我要是说了，游戏就不好玩了。",
+        "留点悬念嘛，后面自然见分晓。",
+        "身份的事，懂的人都懂。",
+        "先不表态，等局势明朗再说。",
+    };
 
     NpcPersona per = NpcPersonaOf(npcName);
 
@@ -1966,8 +2029,14 @@ inline string NpcRoomReplySmart(const string& npcName, const string& senderName,
     {
         AtKind k = NpcClassifyAt(content);
 
+        // 身份底牌敏感：60% 走 HIDE 池（隐瞒不交底），其余走原逻辑
+        //（含记忆引用承认）——"不总是如实说出"，一问问不穿（§26）
+        if (NpcIdentitySensitive(content) && NpcRandChance(60))
+        {
+            base = HI[NpcRandInt(0, 7)];
+        }
         // 有事实记忆优先引用（50%），让"接话"落到实处而不是空泛议论
-        if (hasFact && NpcRandChance(50))
+        else if (hasFact && NpcRandChance(50))
         {
             base = NpcReplacePh(ME[NpcRandInt(0, 11)], "{f}", mem->facts[NpcRandInt(0, (int)mem->facts.size() - 1)]);
         }
@@ -2473,6 +2542,8 @@ inline string NpcBuildSystemPrompt(const NpcContext& ctx)
     s += "猎人被放逐或被狼刀死亡时可开枪带走一名玩家（NIGHT_SHOOT，-1=不开枪）。";
     s += "白天存活玩家先发言讨论（SPEECH），再投票放逐一名玩家（VOTE，0=弃权）。";
     s += "白天被其他玩家@点名时，SPEECH 应优先回应对方的问题或观点。";
+    s += "发言约束：不要直接报出自己的身份（除非局势需要跳身份自证）；";
+    s += "被问身份或查杀信息时可以隐瞒、转移话题或故意误导，不要一被问就如实交底。";
     s += "输出要求：只输出严格一行 JSON：{\"action\":\"动作行\"}，不要输出任何其他文字。";
     s += "动作行只能是：SPEECH|发言内容（中文）/ VOTE|目标编号 / NIGHT_KILL|目标编号 / ";
     s += "NIGHT_CHECK|目标编号 / NIGHT_SAVE|目标编号 / NIGHT_POISON|目标编号 / ";
@@ -2752,7 +2823,8 @@ inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& send
 
     string sys = "你是房间里的狼人杀玩家" + npcName
         + "。你正在游戏大厅的房间里和其他玩家闲聊，不需要暴露身份或战术，"
-        + "自然、口语化地回应一句或两句话即可，语气尽量有性格，不要复读对方的话。";
+        + "自然、口语化地回应一句或两句话即可，语气尽量有性格，不要复读对方的话。"
+        + "被问及身份、查杀等底牌信息时，可以隐瞒、转移话题或故意误导，不要一被问就如实交底。";
 
     string usr = "说话人：" + senderName;
 
@@ -2994,6 +3066,37 @@ inline NpcNeuralResult NpcNeuralScore(const vector<string>& npcNames,
     return r;
 }
 
+// NLP 服务冷却状态（NpcReplyWithNlp 与 NpcNlpWarmupCooldown 共享）：
+// dead=true 时跳过 HTTP 直接走 C++ 回退。两个用途：① HTTP 失败后 30s
+// 冷却（服务不在时避免每轮回复白等一次超时）；② Start 拉起服务后的
+// 预热窗口——python 启动 + jieba 词典加载约 3.5s，期间端口未监听，
+// 提前标记冷却可让 @ 快速回退而非白等 4s 超时（round13 T5-2 根因之一）
+namespace
+{
+    mutex g_nlpCoolMutex;
+    bool g_nlpCoolDead = false;
+    ULONGLONG g_nlpCoolUntil = 0;
+}
+
+// 设置 NLP HTTP 冷却窗口（毫秒）：窗口内 @ 直接回退 C++ 模板。
+// Start 在 CreateProcessW 拉起 npc_nlp_server.py 成功后立即调用
+inline void NpcNlpWarmupCooldown(ULONGLONG ms)
+{
+    lock_guard<mutex> lk(g_nlpCoolMutex);
+
+    g_nlpCoolDead = true;
+    g_nlpCoolUntil = GetTickCount64() + ms;
+}
+
+// 服务就绪回调：Start 的后台探测线程确认 18082 可连后调用，
+// 解除预热冷却窗口（此后 @ 正常走 NLP HTTP）
+inline void NpcNlpReady()
+{
+    lock_guard<mutex> lk(g_nlpCoolMutex);
+
+    g_nlpCoolDead = false;
+}
+
 // 房内 NPC 回复总入口（Start 调用，§25）：优先走 Python NLP 服务
 //（npc_nlp_server.py：jieba 分词 + 语义分类 + 记忆引用，模板池与 C++ 对齐），
 // 服务不可用（未启动/超时/解析空）自动回退 C++ 内置智能模板——无 Python
@@ -3002,10 +3105,6 @@ inline NpcNeuralResult NpcNeuralScore(const vector<string>& npcNames,
 inline string NpcReplyWithNlp(const string& npcName, const string& senderName,
                               const string& content, bool atHit, const NpcMemCtx* mem)
 {
-    static mutex cm;
-    static bool dead = false;
-    static ULONGLONG deadUntil = 0;
-
     string url = NpcEnvOr("WOLF_NPC_NLP_URL", "http://127.0.0.1:18082/reply");
 
     if (!url.empty())
@@ -3013,9 +3112,9 @@ inline string NpcReplyWithNlp(const string& npcName, const string& senderName,
         bool skip = false;
 
         {
-            lock_guard<mutex> lk(cm);
+            lock_guard<mutex> lk(g_nlpCoolMutex);
 
-            if (dead && GetTickCount64() < deadUntil) skip = true;
+            if (g_nlpCoolDead && GetTickCount64() < g_nlpCoolUntil) skip = true;
         }
 
         if (!skip)
@@ -3056,12 +3155,15 @@ inline string NpcReplyWithNlp(const string& npcName, const string& senderName,
             {
                 string t = NpcExtractText(hr.body);
 
-                if (!t.empty()) return t;
+                if (!t.empty())
+                {
+                    return t;
+                }
             }
 
-            lock_guard<mutex> lk(cm);
-            dead = true;
-            deadUntil = GetTickCount64() + 30000;
+            lock_guard<mutex> lk(g_nlpCoolMutex);
+            g_nlpCoolDead = true;
+            g_nlpCoolUntil = GetTickCount64() + 30000;
         }
     }
 

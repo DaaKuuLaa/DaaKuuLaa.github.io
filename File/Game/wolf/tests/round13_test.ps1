@@ -260,8 +260,20 @@ function Add-Npc($roomObj, $name, $mode) {
 # ============ 直连局 bot（连 Server.exe，round9 模式） ============
 
 function New-Bot($k, $port) {
+    # 连接带重试：GAME_PREPARE 到达不代表 Server.exe 已完成 bind 监听，
+    # 本机负载高时（python NLP 预热吃 CPU、fake_ai 等并行进程）Connect 可能被拒。
+    # 窗口 10 x 500ms = 5s（round17 后每局 spawn python + jieba 预热 3.5s，1.5s 不够）
     $c = New-Object Net.Sockets.TcpClient
-    $c.Connect('127.0.0.1', $port)
+    $connected = $false
+    for ($i = 0; $i -lt 10 -and -not $connected; $i++) {
+        try {
+            $c.Connect('127.0.0.1', $port)
+            $connected = $true
+        } catch {
+            if ($i -eq 9) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
     $s = $c.GetStream()
     $w = New-Object IO.StreamWriter($s, [System.Text.UTF8Encoding]::new($false))
     $w.NewLine = "`n"

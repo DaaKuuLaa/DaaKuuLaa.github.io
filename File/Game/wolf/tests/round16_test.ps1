@@ -298,6 +298,29 @@ try {
     $shitLines = @($p2.lines | Where-Object { $_ -match '💩' })
     Check 'A8 💩 共三行/次（居中递进）' (@($shitLines).Count -ge 3)
 
+    # 通配符模式（与 BAN 同款：半角/全角 *?、相邻通配化简）
+    SendLine $h 'SHIT ShitG*'
+    $l = RecvUntilStream $p2.s '💩' 4000
+    Check 'A9 SHIT 半角通配 * 命中目标' ($null -ne $l)
+    $l = RecvUntilStream $h.s '已发给：ShitGuest' 4000
+    Check 'A10 SHIT 通配回执为命中名字' ($null -ne $l)
+
+    SendLine $h 'SHIT ShitG＊'
+    $l = RecvUntilStream $p2.s '💩' 4000
+    Check 'A11 SHIT 全角通配 ＊ 等效半角' ($null -ne $l)
+
+    SendLine $h 'SHIT ShitG**'
+    $l = RecvUntilStream $p2.s '💩' 4000
+    Check 'A12 SHIT 相邻通配化简（** → *）' ($null -ne $l)
+
+    SendLine $h 'SHIT ShitH*'
+    $l = RecvUntilStream $h.s '已发给：ShitHost' 4000
+    Check 'A13 SHIT 模式命中自己照发' ($null -ne $l)
+
+    SendLine $h 'SHIT 不存在*'
+    $l = RecvUntilStream $h.s 'ERROR' 4000
+    Check 'A14 SHIT 通配无命中 clean 提示' ($null -ne $l)
+
     Close-Client $h
     Close-Client $p2
     Kill-All
@@ -308,6 +331,7 @@ try {
     $b_shitAll = $false
     $b_shitBad = $false
     $b_over = $false
+    $b_deadNoRole = $true
     for ($try = 1; $try -le 3 -and -not $b_ok; $try++) {
         Kill-All
         Start-Sleep -Milliseconds 500
@@ -336,32 +360,44 @@ try {
 
         $botsB = @()
         for ($k = 1; $k -le 2; $k++) { $botsB += New-Bot $k $portB }
+        # $dayB 每局必须重置：上一局匹配过「白天发言阶段」后若不重置，
+        # 下一局会在夜晚就提前发 SHIT/VOTE（夜晚输入不认这些命令全被跳过，
+        # 白天真正到来时又因 $dayHandledB 已置位不再发 → 整局作废）
+        $dayB = $false
         $dayHandledB = $false
         $hit2 = $false
         $hitAll = $false
         $hitBad = $false
         $overB = $false
+        $deadNoRole = $true
         $deadlineB = [DateTime]::Now.AddSeconds(110)
         while ([DateTime]::Now -lt $deadlineB) {
             Pump-Bots $botsB
             foreach ($cl in $botsB) {
                 while ($cl.queue.Count -gt 0) {
                     $line = $cl.queue.Dequeue()
-                    if ($line -match 'SHIT|💩|目标') { Write-Output ("B-DBG [" + $cl.k + "] " + $line) }
                     Handle-GameLine $cl $line $botsB
                     if ($line -match '白天发言阶段') { $dayB = $true }
                     if ($line -match '💩 已发给：BotHost') { $hit2 = $true }
                     if ($line -match '💩 已发给：全体（3 人）') { $hitAll = $true }
                     if ($line -match 'SHIT 目标不存在') { $hitBad = $true }
                     if ($line -match '__GAME_OVER__') { $overB = $true }
+                    # 死亡广播（含死因关键词）不得公布身份：who 部分不能出现
+                    # 旧格式「槽N, 职业」；白狼王自爆/狼美人等死因词是死因非身份
+                    if ($line -match '被狼人击杀|被放逐|被女巫毒杀|被白狼王自爆带走|白狼王自爆身亡|被猎人开枪带走|被骑士挑战击杀|被狼美人带走|因情侣殉情') {
+                        if ($line -match '槽\d+[，,]') { $deadNoRole = $false }
+                    }
                 }
             }
             if ($dayB -and -not $dayHandledB) {
                 $dayHandledB = $true
                 # 白天投票窗口开启后同一批测 SHIT 三连（窗口内串行处理）：
-                # bot2 槽号与全体、bot1 非法目标；随后两 bot 弃权投票推进对局
+                # bot2 槽号与全体、bot1 非法目标；随后两 bot 弃权投票推进对局。
+                # 非法目标（SHIT 99/98）双发送者：首夜狼刀可能带走任一 bot，
+                # 死亡玩家输入被服务端跳过（alive 检查），任一存活者发的必命中
                 try { $botsB[1].w.WriteLine('PLAYER_2|SHIT 1') } catch {}
                 try { $botsB[0].w.WriteLine('PLAYER_1|SHIT 99') } catch {}
+                try { $botsB[1].w.WriteLine('PLAYER_2|SHIT 98') } catch {}
                 try { $botsB[1].w.WriteLine('PLAYER_2|SHIT *') } catch {}
                 foreach ($cl in $botsB) {
                     try { $cl.w.WriteLine('PLAYER_' + $cl.k + '|VOTE|0') } catch {}
@@ -374,8 +410,9 @@ try {
         $b_shitAll = $b_shitAll -or $hitAll
         $b_shitBad = $b_shitBad -or $hitBad
         $b_over = $b_over -or $overB
-        $b_ok = $gotPrep -and $b_shit2 -and $b_shitAll -and $b_shitBad -and $b_over
-        Write-Output ("B-TRY " + $try + " prep=" + $gotPrep + " shit2=" + $hit2 + " all=" + $hitAll + " bad=" + $hitBad + " over=" + $overB)
+        $b_deadNoRole = $b_deadNoRole -and $deadNoRole
+        $b_ok = $gotPrep -and $b_shit2 -and $b_shitAll -and $b_shitBad -and $b_over -and $b_deadNoRole
+        Write-Output ("B-TRY " + $try + " prep=" + $gotPrep + " shit2=" + $hit2 + " all=" + $hitAll + " bad=" + $hitBad + " over=" + $overB + " noRole=" + $deadNoRole)
         foreach ($cl in $RB) { Close-Client $cl }
         foreach ($cl in $botsB) { try { $cl.c.Close() } catch {} }
     }
@@ -384,6 +421,7 @@ try {
     Check 'B3 游戏内 SHIT * 全体回执' $b_shitAll
     Check 'B4 游戏内 SHIT 非法目标 clean 提示' $b_shitBad
     Check 'B5 对局正常结束 __GAME_OVER__' $b_over
+    Check 'B6 死亡广播不公布身份（无「槽N, 职业」）' $b_deadNoRole
     Kill-All
 
     # ============ C 段：Python NLP 服务（自动拉起 + 生效） ============
@@ -403,6 +441,18 @@ try {
     $null = RecvUntilStream $gc.s 'JOINED' 3000
     SendLine $hc 'ADD NPC Terse off'
     $null = RecvUntilStream $hc.s '已添加' 3000
+    # 等 NLP 服务就绪再 @：python 启动 + jieba 预热约 3.5s 后才监听 18082，
+    # 提前 @ 会被回退到 C++ 模板，npc_nlp.log 无记录（C3 必假 FAIL）
+    $nlpReady = $false
+    $nlpDeadline = [DateTime]::Now.AddSeconds(8)
+    while ([DateTime]::Now -lt $nlpDeadline -and -not $nlpReady) {
+        try {
+            $tc = New-Object Net.Sockets.TcpClient
+            $tc.Connect('127.0.0.1', 18082)
+            $tc.Close()
+            $nlpReady = $true
+        } catch { Start-Sleep -Milliseconds 200 }
+    }
     Start-Sleep -Milliseconds 400
 
     SendLine $hc '@Terse 你觉得谁是狼？'

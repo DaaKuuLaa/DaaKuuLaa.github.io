@@ -99,12 +99,28 @@ MENTION = [
     "既然{n}说了{x}，那我也接个话。",
 ]
 
+HI = [
+    "这个嘛，身份的事先不急着谈。",
+    "你猜，反正我不说。",
+    "身份？我暂时不想透露，看后面表现。",
+    "这个话题先放一放，现在说没意思。",
+    "我要是说了，游戏就不好玩了。",
+    "留点悬念嘛，后面自然见分晓。",
+    "身份的事，懂的人都懂。",
+    "先不表态，等局势明朗再说。",
+]
+
 # ============ 语义分类 ============
 
 QUESTION_WORDS = ["?", "？", "吗", "么", "怎么", "多少", "几", "等于", "为什么", "啥", "哪", "谁", "是不是", "如何", "咋", "能不能", "你觉得", "怎么看", "怎么办"]
 TAUNT_WORDS = ["就这", "呵呵", "垃圾", "菜", "弱", "笨", "无语", "真行", "你", "怼", "呵呵呵", "不行", "拉了", "就这点"]
 JOKE_WORDS = ["哈哈", "嘻嘻", "笑死", "233", "好玩", "乐", "梗", "摸鱼", "搞怪", "整活"]
 IDENTITY_WORDS = ["我是", "预言家", "女巫", "守卫", "猎人", "丘比特", "狼人", "村民", "怀疑", "查杀", "是狼", "不是", "同意", "支持", "反对"]
+
+# 身份底牌敏感词（与 C++ NpcIdentitySensitive 逐字对齐）：被问底牌时
+# 部分概率走 HI 池隐瞒/误导，不总是如实交底（§26）。不用单字"狼/验"
+#（"谁是狼""验证"误伤），只用身份词全称
+ID_SECRET_WORDS = ["我是", "预言家", "女巫", "守卫", "猎人", "丘比特", "狼人", "村民", "身份", "查杀", "验人", "验了", "跳身份", "是狼", "金水", "底牌"]
 STOP_WORDS = {"的", "了", "吗", "呢", "啊", "呀", "吧", "你", "我", "他", "她", "它", "这", "那", "是", "在", "和", "与", "就", "都", "也", "很", "还", "不", "没", "有", "什么", "怎么", "一个", "那个", "大家", "我们", "你们", "说", "看", "问", "人", "事", "下", "上", "中", "里", "给", "对", "把", "让"}
 
 
@@ -149,13 +165,30 @@ def extract_keyword(content):
 
 
 def _cut_utf8(s, limit):
-    """按字节截断且不切断 UTF-8 码点（与 C++ 的 30 字节截断同规则）"""
+    """按字节截断且不切断 UTF-8 码点（与 C++ 的 30 字节截断同规则）。
+    从尾部回退到最近完整码点边界：半个码点（孤首字节或缺续字节）整体丢弃"""
     b = s.encode("utf-8")
     if len(b) <= limit:
         return s
     i = limit
-    while i > 0 and (b[i] & 0xC0) == 0x80:
-        i -= 1
+    while i > 0:
+        if b[i - 1] <= 0x7F:
+            break
+        j = i - 1
+        while j > 0 and (b[j] & 0xC0) == 0x80:
+            j -= 1
+        h = b[j]
+        if h >= 0xF0:
+            need = 4
+        elif h >= 0xE0:
+            need = 3
+        elif h >= 0xC0:
+            need = 2
+        else:
+            need = 1
+        if i - j >= need:
+            break
+        i = j
     return b[:i].decode("utf-8", "ignore")
 
 
@@ -197,6 +230,11 @@ def build_reply(data):
             names.add(nm)
 
     x = extract_keyword(content)
+
+    # 身份底牌敏感（被问身份/查杀等）：60% 走 HI 池隐瞒（与 C++ 对齐，
+    # 顺序：HI → 记忆引用 → 分类池）；"不总是如实说出"，一问问不穿
+    if at and any(w in content for w in ID_SECRET_WORDS) and random.random() < 0.6:
+        return persona_post(random.choice(HI), persona)
 
     # 记忆引用：facts 含身份/关键信息行 → 50% 引用（ME 池）
     mem_hit = None
@@ -274,6 +312,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # 预热：jieba 词典加载约 3.5s，必须在监听前完成，
+    # 否则每轮首个 @ 请求撞 WinHttp 2s 超时（round13 T5-2 失败根因）
+    if _jieba_ok:
+        try:
+            jieba.lcut("预热词典加载")
+        except Exception:
+            pass
     port = 18082
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), Handler)

@@ -39,7 +39,9 @@ try {
                     $n = $stream.Read($bytes, 0, $bytes.Length)
                 } catch { $n = -1 }
                 if ($n -le 0) { break }
-                [void]$total.Append([System.Text.Encoding]::ASCII.GetString($bytes, 0, $n))
+                # UTF-8 解码：请求体含中文（NPC 名/发言/系统提示词），
+                # ASCII 解码会把中文全变 ?，BODY 断言（round17 C2）取不到词
+                [void]$total.Append([System.Text.Encoding]::UTF8.GetString($bytes, 0, $n))
             } while (-not $total.ToString().Contains("`r`n`r`n"))
             # body 可能比 header 后到（WinHttp 分段发送）：\r\n\r\n 出现后
             # 在 300ms 空闲窗口内把剩余数据读完，避免 BODY 断言假 FAIL
@@ -48,7 +50,7 @@ try {
                 $n = 0
                 try { $n = $stream.Read($bytes, 0, $bytes.Length) } catch { $n = -1 }
                 if ($n -le 0) { break }
-                [void]$total.Append([System.Text.Encoding]::ASCII.GetString($bytes, 0, $n))
+                [void]$total.Append([System.Text.Encoding]::UTF8.GetString($bytes, 0, $n))
                 $bodyQuiet = [DateTime]::Now.AddMilliseconds(300)
             }
             $raw = $total.ToString()

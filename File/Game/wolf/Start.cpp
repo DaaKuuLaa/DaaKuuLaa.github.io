@@ -938,11 +938,17 @@ void NpcRoomBroadcast(Room* room, const string& npcName, const string& text, ULO
 {
     // 在线回复线程是异步路径，广播前再查一次禁言：speak 时未禁言、但 HTTP
     // 往返期间被 MUTE 的窗口不能漏（§23.2）。离线同步路径 NpcRoomSpeak 已拦
-    if (!room || IsMuted(room, npcName)) return;
+    if (!room || IsMuted(room, npcName))
+    {
+        return;
+    }
 
     string sanitized = SanitizeChat(text);
 
-    if (sanitized.empty()) return;
+    if (sanitized.empty())
+    {
+        return;
+    }
 
     RoomMsg(room, npcName + "：" + sanitized, INVALID_SOCKET);
 
@@ -2783,10 +2789,11 @@ void HandleCommand(SOCKET sock, const string& line)
 
     if (!cmd)
     {
-// SHIT 彩蛋（不写 HELP）：SHIT <名字|槽号|*> ——向目标私发三行居中 💩
-        //（逐行单播，格式同聊天广播），发送方收到生效回执。目标解析与
-        // PICK 同规则：数字=槽号优先、名字 NameEquals 大小写不敏感、
-        // *=房内全体（除自己）。彩蛋不设权限，任何成员可用
+// SHIT 彩蛋（不写 HELP）：SHIT <名字|槽号|通配模式|*> ——向目标私发三行居中
+        // 💩（逐行单播，格式同聊天广播，**不署名保持匿名**），发送方收到生效
+        // 回执。目标解析：数字=槽号优先、名字 NameEquals 大小写不敏感、含
+        // 通配符时按 BAN 同款模式匹配（§19.1 全角等效半角 + 相邻通配化简 +
+        // GlobMatch 扫描）、*=房内全体（除自己）。彩蛋不设权限，任何成员可用
         if (upper == "SHIT" && room)
         {
             vector<int> targets;
@@ -2814,6 +2821,7 @@ void HandleCommand(SOCKET sock, const string& line)
             }
             else
             {
+                // 精确名字优先；未命中且含通配符时按 BAN 同款模式扫描
                 for (int i = 0; i < MAX_PLAYERS; ++i)
                 {
                     if (room->slots[i].name.empty()) continue;
@@ -2822,6 +2830,21 @@ void HandleCommand(SOCKET sock, const string& line)
                     {
                         targets.push_back(i);
                         break;
+                    }
+                }
+
+                if (targets.empty() && HasWildcard(argStr))
+                {
+                    string pat = NormalizeWildcardPattern(argStr);
+
+                    for (int i = 0; i < MAX_PLAYERS; ++i)
+                    {
+                        if (room->slots[i].name.empty()) continue;
+
+                        if (GlobMatch(pat, room->slots[i].name))
+                        {
+                            targets.push_back(i);
+                        }
                     }
                 }
 
@@ -2846,11 +2869,11 @@ void HandleCommand(SOCKET sock, const string& line)
                 for (int li = 0; li < 3; ++li)
                 {
                     SendToClient(room->slots[targets[ti]].sock,
-                                 "ROOM_MSG|" + ci.name + "：" + SHIT_LINES[li]);
+                                 string("ROOM_MSG|") + SHIT_LINES[li]);
                 }
             }
 
-            string who = (argStr == "*")
+            string who = (targets.size() > 1)
                 ? "全体（" + to_string((int)targets.size()) + " 人）"
                 : room->slots[targets[0]].name;
 
@@ -5349,6 +5372,35 @@ void StartNlpServerIfNeeded()
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         Log("NLP server spawn ok (python npc_nlp_server.py)");
+        // 预热窗口：python 启动 + jieba 词典加载约 3.5s 后才监听 18082，
+        // 窗口内 @ 直接回退 C++ 模板（快速），避免每轮首条 @ 白等 4s 超时
+        NpcNlpWarmupCooldown(5000);
+        // 后台探测就绪：端口可连即解除冷却窗口，此后 @ 正常走 NLP
+        std::thread([] {
+            for (int i = 0; i < 40; ++i)
+            {
+                SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+                if (s == INVALID_SOCKET) break;
+
+                sockaddr_in sa = { 0 };
+                sa.sin_family = AF_INET;
+                sa.sin_port = htons(18082);
+                sa.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+                bool ok = (connect(s, (sockaddr*)&sa, sizeof(sa)) == 0);
+
+                closesocket(s);
+
+                if (ok)
+                {
+                    NpcNlpReady();
+                    return;
+                }
+
+                Sleep(150);
+            }
+        }).detach();
     }
 
     free(buf);

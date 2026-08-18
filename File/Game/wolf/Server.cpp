@@ -1309,6 +1309,88 @@ int FindAliveJob(int jobId)
 
 // ============ 禁言名单判定（需求 §20.4） ============
 
+// 全角通配符（＊ U+FF0A、？ U+FF1F）规范化为半角：半角全角等效，
+// 与 Start.cpp BAN/MUTE 同款（§19.1），匹配逻辑只认半角
+string NormalizeWildcards(const string& s)
+{
+    string out;
+
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == 0xEF && i + 2 < s.size() &&
+            (unsigned char)s[i + 1] == 0xBC &&
+            ((unsigned char)s[i + 2] == 0x8A || (unsigned char)s[i + 2] == 0x9F))
+        {
+            out += ((unsigned char)s[i + 2] == 0x8A) ? '*' : '?';
+            i += 2;
+        }
+        else
+        {
+            out += (char)c;
+        }
+    }
+
+    return out;
+}
+
+// 是否含通配符（半角或全角），决定按模式匹配（不做名字净化）
+bool HasWildcard(const string& s)
+{
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == '*' || c == '?') return true;
+
+        if (c == 0xEF && i + 2 < s.size() &&
+            (unsigned char)s[i + 1] == 0xBC &&
+            ((unsigned char)s[i + 2] == 0x8A || (unsigned char)s[i + 2] == 0x9F))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// 通配模式化简（§20.8）：全角已统一半角后循环折叠相邻 "**"/"*?"/"?*" 为
+// 单个 "*"，与 Start.cpp 同款——BAN *** 与 BAN * 等价，SHIT 同规则
+string NormalizeWildcardPattern(const string& s)
+{
+    string p = NormalizeWildcards(s);
+    bool changed = true;
+
+    while (changed)
+    {
+        changed = false;
+        string out;
+        out.reserve(p.size());
+
+        for (size_t i = 0; i < p.size(); ++i)
+        {
+            if (i + 1 < p.size() &&
+                ((p[i] == '*' && p[i + 1] == '*') ||
+                 (p[i] == '*' && p[i + 1] == '?') ||
+                 (p[i] == '?' && p[i + 1] == '*')))
+            {
+                out += '*';
+                ++i;
+                changed = true;
+            }
+            else
+            {
+                out += p[i];
+            }
+        }
+
+        p = out;
+    }
+
+    return p;
+}
+
 // glob 模式匹配：* 任意长度（含 0），? 恰好 1 位，ASCII 大小写不敏感。
 // 与 Start.cpp 同款动态规划迭代版（无递归爆栈），逐字节匹配语义一致
 bool GlobMatch(const string& pattern, const string& text)
@@ -1746,19 +1828,20 @@ void NpcDiscussionBeat()
 
 // ============ 死亡处理（含情侣殉情、猎人开枪） ============
 
-// 玩家死亡时的广播文案：职业名与死因都要按语言取词，中英占位不共用，
-// 故按语言各生成完整句子（调用方用 SendToAllL10nPair 分送）
+// 玩家死亡时的广播文案：死因按语言取词，中英占位不共用，故按语言各
+// 生成完整句子（调用方用 SendToAllL10nPair 分送）。**不公布死者身份**
+//（用户规则：人死不翻牌），who 只含名字与槽号
 string DeathText(int slot, const string& cause, Lang l)
 {
     string who;
 
     if (l == Lang::En)
     {
-        who = "Player " + g_players[slot].name + " (slot " + to_string(slot) + ", " + JOBS[g_players[slot].jobId].enName + ")";
+        who = "Player " + g_players[slot].name + " (slot " + to_string(slot) + ")";
     }
     else
     {
-        who = "玩家" + g_players[slot].name + "(槽" + to_string(slot) + ", " + JOBS[g_players[slot].jobId].zhName + ")";
+        who = "玩家" + g_players[slot].name + "(槽" + to_string(slot) + ")";
     }
 
     string how;
@@ -1910,7 +1993,9 @@ void KillPlayer(int slot, const string& cause)
             else if (c == "knight_fail") how = "骑士挑战失败身亡";
             else how = "死亡";
 
-            g_deathNotes.push_back(to_string(s) + "号" + g_players[s].name + "（" + JOBS[g_players[s].jobId].zhName + "）已死亡，" + how + "。");
+            // 死亡摘要入库供 NPC 决策使用（公开线索；死因映射与 DeathText
+            // 一致）。**不含身份**（用户规则：人死不翻牌，NPC 同样不可见）
+            g_deathNotes.push_back(to_string(s) + "号" + g_players[s].name + "已死亡，" + how + "。");
         }
 
         // 仅狼刀/白狼王自爆致死时提示死者本人：放逐（遗言流程已有提示）、
@@ -2998,11 +3083,11 @@ bool ParseBombCommand(const string& content, int& target)
     return true;
 }
 
-// 解析 SHIT 彩蛋命令（不写 HELP）：SHIT n / SHIT * / SHIT <名字>。
-// 返回 true 时 target 语义：0=全体（*）、1..N=槽位；名字解析在调用处
-// 完成（需要 g_players 名表）。与投票命令共存于白天输入：内容以
-// SHIT 开头才进本函数，普通聊天不受影响
-bool ParseShitCommand(const string& content, int& target)
+// 解析 SHIT 彩蛋命令（不写 HELP）：SHIT n / SHIT * / SHIT <名字|通配模式>。
+// 返回 true 时 target 语义：0=全体（*）、1..N=槽位或精确名命中、-2=按
+// 通配模式匹配（pattern 回填规范化模式，调用处 GlobMatch 扫描玩家名）。
+// 与投票命令共存于白天输入：内容以 SHIT 开头才进本函数，普通聊天不受影响
+bool ParseShitCommand(const string& content, int& target, string& pattern)
 {
     string line = content;
 
@@ -3042,9 +3127,7 @@ bool ParseShitCommand(const string& content, int& target)
         return true;
     }
 
-    // 名字：匹配本局任一玩家（大小写不敏感，与房内 NAME 规则一致）；
-    // 匹配不到时返回 0 但置"名字模式"，调用处用 0 区分（0 也是 * 的
-    // 返回值，因此调用处必须先查名字命中再判断 *）
+    // 名字：匹配本局任一玩家（大小写不敏感，与房内 NAME 规则一致）
     for (int i = 1; i <= g_numPlayers; ++i)
     {
         if (NameEquals(g_players[i].name, tok[1]))
@@ -3054,7 +3137,10 @@ bool ParseShitCommand(const string& content, int& target)
         }
     }
 
-    target = -1;
+    // 名字未命中：按 BAN 同款通配模式处理（§19.1 全角统一半角 + 化简），
+    // 无通配符时模式扫描自然无命中，调用处统一报「目标不存在」
+    pattern = NormalizeWildcardPattern(tok[1]);
+    target = -2;
     return true;
 }
 
@@ -3328,21 +3414,17 @@ bool GatherDayVotes(int& exiled, int& bombTarget, int& challengeTarget)
             }
         }
 
-        // SHIT 彩蛋（不写 HELP）：SHIT <槽号|名字|*>——向目标单播三行
-        // 居中 💩（不走聊天广播，仅目标可见），发送方收到生效回执；
-        // 目标不存在与投票/自爆同样提示重输。死亡玩家连接仍在时照发
-        //（观战可见），SendToClient 对未连接槽位静默跳过
+        // SHIT 彩蛋（不写 HELP）：SHIT <槽号|名字|通配模式|*>——向目标单播
+        // 三行居中 💩（不走聊天广播，仅目标可见，💩 行不署名保持匿名），
+        // 发送方收到生效回执；通配模式与 BAN 同款（* 任意长度、? 单字符、
+        // 全角等效半角、相邻通配化简）。目标不存在与投票/自爆同样提示重输。
+        // 死亡玩家连接仍在时照发（观战可见），SendToClient 对未连接槽位静默跳过
         int shitT = -2;
+        string shitPat;
 
-        if (ParseShitCommand(content, shitT))
+        if (ParseShitCommand(content, shitT, shitPat))
         {
-            if (shitT < 0)
-            {
-                SendToClientL10nPair(slot, "SHIT 目标不存在：必须是 1..N 的玩家编号、玩家名或 *。", "SHIT target not found: a player slot 1..N, a name, or *.");
-                continue;
-            }
-
-            string targetDesc;
+            vector<int> shitTargets;
 
             if (shitT == 0)
             {
@@ -3350,14 +3432,10 @@ bool GatherDayVotes(int& exiled, int& bombTarget, int& challengeTarget)
                 {
                     if (i == slot) continue;
 
-                    SendToClient(i - 1, g_players[slot].name + "：" + ShitLine(0));
-                    SendToClient(i - 1, g_players[slot].name + "：" + ShitLine(1));
-                    SendToClient(i - 1, g_players[slot].name + "：" + ShitLine(2));
+                    shitTargets.push_back(i);
                 }
-
-                targetDesc = "全体（" + to_string(g_numPlayers - 1) + " 人）";
             }
-            else
+            else if (shitT > 0)
             {
                 if (shitT < 1 || shitT > g_numPlayers)
                 {
@@ -3365,11 +3443,39 @@ bool GatherDayVotes(int& exiled, int& bombTarget, int& challengeTarget)
                     continue;
                 }
 
-                SendToClient(shitT - 1, g_players[slot].name + "：" + ShitLine(0));
-                SendToClient(shitT - 1, g_players[slot].name + "：" + ShitLine(1));
-                SendToClient(shitT - 1, g_players[slot].name + "：" + ShitLine(2));
-                targetDesc = g_players[shitT].name;
+                shitTargets.push_back(shitT);
             }
+            else
+            {
+                for (int i = 1; i <= g_numPlayers; ++i)
+                {
+                    if (GlobMatch(shitPat, g_players[i].name))
+                    {
+                        shitTargets.push_back(i);
+                    }
+                }
+            }
+
+            if (shitTargets.empty())
+            {
+                SendToClientL10nPair(slot, "SHIT 目标不存在：必须是 1..N 的玩家编号、玩家名或 *。", "SHIT target not found: a player slot 1..N, a name, or *.");
+                continue;
+            }
+
+            string targetDesc;
+
+            for (size_t sti = 0; sti < shitTargets.size(); ++sti)
+            {
+                int t = shitTargets[sti];
+
+                SendToClient(t - 1, ShitLine(0));
+                SendToClient(t - 1, ShitLine(1));
+                SendToClient(t - 1, ShitLine(2));
+            }
+
+            targetDesc = (shitTargets.size() == 1)
+                ? g_players[shitTargets[0]].name
+                : "全体（" + to_string((int)shitTargets.size()) + " 人）";
 
             SendToClientL10nPair(slot, "💩 已发给：" + targetDesc, "💩 sent to: " + targetDesc);
             continue;
