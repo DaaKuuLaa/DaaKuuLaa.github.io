@@ -532,94 +532,114 @@ try {
     Start-Sleep -Milliseconds 500
 
     # ============ T8/T9：局内 NPC 修复 + 在线决策（LEVEL0 局 2真2NPC） ============
-    Remove-Item "$wolf\fake_ai_log.txt" -ErrorAction SilentlyContinue
-    $env:WOLF_NPC_API_KEY = 'glm-test-key-777'
-    $env:WOLF_NPC_API_URL = 'http://127.0.0.1:18080/chat/completions'
-    $env:WOLF_NPC_TIMEOUT_SECONDS = '3'
-    $fake = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$wolf\tests\npc_fake_ai.ps1") -WindowStyle Hidden -PassThru -RedirectStandardOutput "$wolf\fake_ai_out.txt"
-    $fcReady = $false
-    $fcDeadline = [DateTime]::Now.AddSeconds(25)
-    while ([DateTime]::Now -lt $fcDeadline -and -not $fcReady) {
-        try {
-            $tc = New-Object Net.Sockets.TcpClient
-            $tc.Connect('127.0.0.1', 18080)
-            $tc.Close()
-            $fcReady = $true
-        } catch { Start-Sleep -Milliseconds 400 }
-    }
-    Start-Sleep -Milliseconds 800
-    $null = Start-RM 8888
-    $port8 = Get-FreePort
-    $R8 = @(New-Client 'Hst8')
-    SendLine $R8[0] ('CREATE|' + $port8)
-    $null = RecvUntilStream $R8[0].s 'CREATED' 3000
-    $R8 += (New-Client 'Guest8')
-    SendLine $R8[1] ('JOIN|' + $port8)
-    $null = RecvUntilStream $R8[1].s 'JOINED' 3000
-    SendLine $R8[0] 'ADD NPC NpcGame off'
-    $null = RecvUntilStream $R8[0].s '已添加' 3000
-    SendLine $R8[0] 'ADD NPC NpcGame2 on'
-    $null = RecvUntilStream $R8[0].s '已添加' 3000
-    SendLine $R8[0] 'LEVEL|0'
-    $null = RecvUntilStream $R8[0].s '档位已' 2000
-    SendLine $R8[0] 'VILLAGER|1'
-    $null = RecvUntilStream $R8[0].s '村民职业已启用' 2000
-    SendLine $R8[0] 'RATIO|1|0|2'
-    $null = RecvUntilStream $R8[0].s '比例已设为' 2000
-    SendLine $R8[0] 'START /F'
-    $gp8 = @()
-    foreach ($cl in $R8) { $gp8 += RecvUntilStream $cl.s 'GAME_PREPARE|' 5000 }
-    Check 'T8-0 LEVEL0 4 人局开局成功（收 GAME_PREPARE）' (@($gp8 | Where-Object { $_ }).Count -eq 2)
-    foreach ($cl in $R8) { Close-Client $cl }
+    # 4 人局（1狼+0中立+2神+1村民）存在「首夜狼刀命中村民 → 屠边 → 白天不到」
+    # 的随机结局（约 25%），此时局内 @ 接话与在线决策断言必然无样本——重试
+    # 最多 3 局（每次新局角色重随机），任何一局满足全部条件即通过
+    $t8Ok = $false
+    $t8_0 = $false
+    $t8_npcReplied = $false
+    $t8_over = $false
+    $t8_req = $false
+    $t8_model = $false
+    for ($try = 1; $try -le 3 -and -not $t8Ok; $try++) {
+        Kill-All
+        Start-Sleep -Milliseconds 500
+        Remove-Item "$wolf\fake_ai_log.txt" -ErrorAction SilentlyContinue
+        $env:WOLF_NPC_API_KEY = 'glm-test-key-777'
+        $env:WOLF_NPC_API_URL = 'http://127.0.0.1:18080/chat/completions'
+        $env:WOLF_NPC_TIMEOUT_SECONDS = '3'
+        $fake = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$wolf\tests\npc_fake_ai.ps1") -WindowStyle Hidden -PassThru -RedirectStandardOutput "$wolf\fake_ai_out.txt"
+        $fcReady = $false
+        $fcDeadline = [DateTime]::Now.AddSeconds(25)
+        while ([DateTime]::Now -lt $fcDeadline -and -not $fcReady) {
+            try {
+                $tc = New-Object Net.Sockets.TcpClient
+                $tc.Connect('127.0.0.1', 18080)
+                $tc.Close()
+                $fcReady = $true
+            } catch { Start-Sleep -Milliseconds 400 }
+        }
+        Start-Sleep -Milliseconds 800
+        $null = Start-RM 8888
+        $port8 = Get-FreePort
+        $R8 = @(New-Client 'Hst8')
+        SendLine $R8[0] ('CREATE|' + $port8)
+        $null = RecvUntilStream $R8[0].s 'CREATED' 3000
+        $R8 += (New-Client 'Guest8')
+        SendLine $R8[1] ('JOIN|' + $port8)
+        $null = RecvUntilStream $R8[1].s 'JOINED' 3000
+        SendLine $R8[0] 'ADD NPC NpcGame off'
+        $null = RecvUntilStream $R8[0].s '已添加' 3000
+        SendLine $R8[0] 'ADD NPC NpcGame2 on'
+        $null = RecvUntilStream $R8[0].s '已添加' 3000
+        SendLine $R8[0] 'LEVEL|0'
+        $null = RecvUntilStream $R8[0].s '档位已' 2000
+        SendLine $R8[0] 'VILLAGER|1'
+        $null = RecvUntilStream $R8[0].s '村民职业已启用' 2000
+        SendLine $R8[0] 'RATIO|1|0|2'
+        $null = RecvUntilStream $R8[0].s '比例已设为' 2000
+        SendLine $R8[0] 'START /F'
+        $gp8 = @()
+        foreach ($cl in $R8) { $gp8 += RecvUntilStream $cl.s 'GAME_PREPARE|' 5000 }
+        $t8_0 = (@($gp8 | Where-Object { $_ }).Count -eq 2)
 
-    $bots8 = @()
-    for ($k = 1; $k -le 2; $k++) { $bots8 += New-Bot $k $port8 }
-    $day8 = $false
-    $over8 = $false
-    $voted8 = $false
-    $npcAt8 = $false
-    $npcGameReplied = $false
-    $deadline8 = [DateTime]::Now.AddSeconds(110)
-    $lastPing8 = [DateTime]::Now
-    $sentAt = $false
-    while ([DateTime]::Now -lt $deadline8) {
-        if (([DateTime]::Now - $lastPing8).TotalSeconds -ge 1) {
-            foreach ($b in $bots8) { try { $b.w.WriteLine('PING') } catch {} }
-            $lastPing8 = [DateTime]::Now
-        }
-        Pump-Bots $bots8
-        foreach ($b in $bots8) {
-            while ($b.queue.Count -gt 0) {
-                $line = $b.queue.Dequeue()
-                Handle-GameLine $b $line $bots8
-                if ($line -match 'PLAYER_LIST\|') { $b.pl = $line }
-                if ($line.Contains('白天发言阶段')) { $day8 = $true; $voted8 = $false }
-                # 白天阶段给 NpcGame 发 @（局内 NPC 接话，§23.4）
-                if ($day8 -and -not $sentAt) {
-                    try { $b.w.WriteLine('PLAYER_' + $b.k + '|@NpcGame 你分析下局势') } catch {}
-                    $sentAt = $true
-                }
-                # 局内 NPC 接话检测：NpcGame： 行
-                if ($line -match 'NpcGame：' -and $line -notmatch '^ROOM') { $npcGameReplied = $true }
-                if ($line.Trim() -eq '__GAME_OVER__') { $over8 = $true }
+        $bots8 = @()
+        for ($k = 1; $k -le 2; $k++) { $bots8 += New-Bot $k $port8 }
+        $day8 = $false
+        $over8 = $false
+        $voted8 = $false
+        $npcAt8 = $false
+        $npcGameReplied = $false
+        $deadline8 = [DateTime]::Now.AddSeconds(110)
+        $lastPing8 = [DateTime]::Now
+        $sentAt = $false
+        while ([DateTime]::Now -lt $deadline8) {
+            if (([DateTime]::Now - $lastPing8).TotalSeconds -ge 1) {
+                foreach ($b in $bots8) { try { $b.w.WriteLine('PING') } catch {} }
+                $lastPing8 = [DateTime]::Now
             }
+            Pump-Bots $bots8
+            foreach ($b in $bots8) {
+                while ($b.queue.Count -gt 0) {
+                    $line = $b.queue.Dequeue()
+                    Handle-GameLine $b $line $bots8
+                    if ($line -match 'PLAYER_LIST\|') { $b.pl = $line }
+                    if ($line.Contains('白天发言阶段')) { $day8 = $true; $voted8 = $false }
+                    # 白天阶段给 NpcGame 发 @（局内 NPC 接话，§23.4）
+                    if ($day8 -and -not $sentAt) {
+                        try { $b.w.WriteLine('PLAYER_' + $b.k + '|@NpcGame 你分析下局势') } catch {}
+                        $sentAt = $true
+                    }
+                    # 局内 NPC 接话检测：NpcGame： 行
+                    if ($line -match 'NpcGame：' -and $line -notmatch '^ROOM') { $npcGameReplied = $true }
+                    if ($line.Trim() -eq '__GAME_OVER__') { $over8 = $true }
+                }
+            }
+            if ($day8 -and -not $voted8) {
+                foreach ($b in $bots8) { try { $b.w.WriteLine('PLAYER_' + $b.k + '|VOTE|0') } catch {} }
+                $voted8 = $true
+            }
+            if ($over8) { break }
+            Start-Sleep -Milliseconds 50
         }
-        if ($day8 -and -not $voted8) {
-            foreach ($b in $bots8) { try { $b.w.WriteLine('PLAYER_' + $b.k + '|VOTE|0') } catch {} }
-            $voted8 = $true
+        foreach ($b in $bots8) { Close-Client $b }
+        Start-Sleep -Milliseconds 1200
+        $fakeAiLog8 = ''
+        if (Test-Path "$wolf\fake_ai_log.txt") {
+            try { $fakeAiLog8 = [IO.File]::ReadAllText("$wolf\fake_ai_log.txt", [Text.Encoding]::UTF8) } catch { }
         }
-        if ($over8) { break }
-        Start-Sleep -Milliseconds 50
+        $t8_req = $fakeAiLog8.Contains('REQ: POST')
+        $t8_model = $fakeAiLog8.Contains('glm-4.7-flash')
+        $t8_npcReplied = $npcGameReplied
+        $t8_over = $over8
+        $t8Ok = $t8_0 -and $npcGameReplied -and $over8 -and $t8_req
+        Write-Output ("T8-TRY " + $try + " gp=" + $t8_0 + " npcReplied=" + $npcGameReplied + " over=" + $over8 + " req=" + $t8_req)
     }
-    Check 'T8-1 局内 NPC 白天被 @ 接话（§23.4 修复）' $npcGameReplied
-    Check 'T8-2 LEVEL0 4 人局正常结束 __GAME_OVER__' $over8
-    $fakeAiLog8 = ''
-    if (Test-Path "$wolf\fake_ai_log.txt") {
-        try { $fakeAiLog8 = [IO.File]::ReadAllText("$wolf\fake_ai_log.txt", [Text.Encoding]::UTF8) } catch { }
-    }
-    Check 'T9-1 在线游戏内决策请求已发出（fake_ai 收到 REQ）' ($fakeAiLog8.Contains('REQ: POST'))
-    Check 'T9-2 在线决策请求体含 model=glm-4.7-flash' ($fakeAiLog8.Contains('glm-4.7-flash'))
-    foreach ($b in $bots8) { Close-Client $b }
+    Check 'T8-0 LEVEL0 4 人局开局成功（收 GAME_PREPARE）' $t8_0
+    Check 'T8-1 局内 NPC 白天被 @ 接话（§23.4 修复）' $t8_npcReplied
+    Check 'T8-2 LEVEL0 4 人局正常结束 __GAME_OVER__' $t8_over
+    Check 'T9-1 在线游戏内决策请求已发出（fake_ai 收到 REQ）' $t8_req
+    Check 'T9-2 在线决策请求体含 model=glm-4.7-flash' $t8_model
     Kill-All
     Remove-Item Env:\WOLF_NPC_API_KEY -ErrorAction SilentlyContinue
     Remove-Item Env:\WOLF_NPC_API_URL -ErrorAction SilentlyContinue

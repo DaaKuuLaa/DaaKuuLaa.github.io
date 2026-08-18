@@ -1823,6 +1823,204 @@ inline string NpcLastword(const NpcContext& ctx, const vector<string>& lines, in
 // 离线回复 = 模板随机（可嵌入对方话题词，让回复像真的在接话）；
 // 在线回复 = 调大模型生成（失败回退离线模板，链路与游戏内一致）
 
+// ============ 房内 NPC 智能化（§24 离线增强） ============
+// 性格：名字 FNV-1a 哈希稳定映射——同 NPC 跨进程/重启风格一致，
+// 纯函数无共享状态，Start 在线回复线程与主线程并发调用天然安全
+enum NpcPersona { P_Talkative, P_Cool, P_Cautious, P_Humor, P_Toxic, P_Dizzy };
+
+inline NpcPersona NpcPersonaOf(const string& npcName)
+{
+    uint32_t h = 2166136261u;
+
+    for (size_t i = 0; i < npcName.size(); ++i)
+    {
+        h ^= (unsigned char)npcName[i];
+        h *= 16777619u;
+    }
+
+    return (NpcPersona)(h % 6);
+}
+
+// @ 内容语义分类：问句 > 挑衅 > 玩笑 > 陈述（纯规则，不依赖外部库）
+enum AtKind { K_QUESTION, K_TAUNT, K_JOKE, K_STATEMENT };
+
+inline AtKind NpcClassifyAt(const string& s)
+{
+    if (s.find('?') != string::npos || s.find('？') != string::npos
+        || s.find("吗") != string::npos || s.find("呢") != string::npos
+        || s.find("怎么") != string::npos || s.find("谁") != string::npos
+        || s.find("什么") != string::npos || s.find("哪") != string::npos
+        || s.find("多少") != string::npos || s.find("是不是") != string::npos)
+    {
+        return K_QUESTION;
+    }
+
+    if (s.find("菜") != string::npos || s.find("垃圾") != string::npos
+        || s.find("弱") != string::npos || s.find("就这") != string::npos
+        || s.find("废物") != string::npos || s.find("哈？") != string::npos)
+    {
+        return K_TAUNT;
+    }
+
+    if (s.find("哈哈") != string::npos || s.find("笑") != string::npos
+        || s.find("好玩") != string::npos || s.find("233") != string::npos)
+    {
+        return K_JOKE;
+    }
+
+    return K_STATEMENT;
+}
+
+// 对话记忆上下文：Start 房间持有（chatMutex 保护），决策前在锁内拷贝、
+// 决策后即弃——模板生成绝不在持锁状态下跑（锁序与现有约定一致）
+struct NpcMemCtx
+{
+    vector<pair<string, string> > recentEvents;  // 最近 4 条 <说话人, 内容>
+    vector<string> facts;                        // 可引用事实（"名字：内容"原句截断）
+    string selfName;                             // 本 NPC 名（性格后处理用）
+};
+
+// 房内离线回复生成：atHit=true 必答（8 变体，嵌词）；false = 普通接话
+//（8 变体：点名型/闲聊型，嵌入发送者名字或内容词，营造在场感）。
+// 定义在本段末尾（NpcRoomReplySmart 之后）——智能版依赖它，需先声明
+inline string NpcRoomReplyOffline(const string& npcName, const string& senderName,
+                                  const string& content, bool atHit);
+
+// 房内离线回复（智能版）：@ 语义分类 + 记忆引用 + 性格后处理。
+// mem 为空指针时退化为原模板行为——旧调用点与 round12/13 断言零感知。
+// 注意：分类只换模板库、不改变"恰一条回复"语义（R8 红线）
+inline string NpcRoomReplySmart(const string& npcName, const string& senderName,
+                                const string& content, bool atHit, const NpcMemCtx* mem)
+{
+    // 问句必答库 12 变体：全部含"我觉得/同意/不同意/我的意见/判断/是"等
+    // 答案词——被 @ 问句时不敷衍，先给出判断立场（§24 互动反应）
+    static const char* const QA[] = {
+        "我觉得{x}这事，还是得看证据说话。",
+        "要我说，{x}的问题不简单，我的意见是先看看。",
+        "我同意{x}的看法，目前没有更合理的解释。",
+        "不同意{x}这说法，理由我晚点说清楚。",
+        "我的判断是{x}相关的人先观察，不急。",
+        "关于{x}，我的答案很明确：先观望是对的。",
+        "我倾向于{x}那边是没问题的，但也不排除。",
+        "这个问题问得好，我的想法是{x}值得跟进。",
+        "说实话，{x}我没想好，但绝不是乱说。",
+        "我认为{x}的事再议，先看下一轮动静。",
+        "可以，{x}这个说法我基本同意。",
+        "不好说，{x}的真相要等更多信息，这是我的判断。",
+    };
+    // 怼人库 8 变体（毒舌性格恒走，其余被挑衅 60% 概率走）
+    static const char* const TA[] = {
+        "就这？{x}你要不先自己理理思路。",
+        "呵，{x}这种话我见多了，来点新鲜的。",
+        "你这话说得，我可不敢苟同，{x}先放一边。",
+        "水平不行就说{x}，怎么跟小学生似的。",
+        "笑死，{x}你也好意思说出口。",
+        "行了行了，{x}的事你说了不算。",
+        "我懒得跟你争，{x}你自己品品。",
+        "怼我？那你倒是说说{x}哪里站得住。",
+    };
+    // 接梗库 6 变体（对方发玩笑时配合演出）
+    static const char* const JO[] = {
+        "哈哈{x}，这个梗我接住了。",
+        "笑死我了{x}，你太有才了。",
+        "好活{x}，下次还玩这个。",
+        "{x}哈哈哈哈，笑不活了。",
+        "这波{x}属实逗，我记下了。",
+        "乐了乐了，{x}可真有你的。",
+    };
+    // 记忆库 12 变体：{f} 嵌提取的事实原句，回复引用前文制造"在听"感
+    static const char* const ME[] = {
+        "我记得{f}，这事值得说道。",
+        "{f}？我当时也听到这句了。",
+        "刚才{f}，大家记一下这条线。",
+        "不用提醒我也记得{f}。",
+        "{f}——这条信息我留了个心眼。",
+        "说到这个，{f}就是证据。",
+        "我把{f}记进小本本了。",
+        "慢着，{f}，这个细节别漏了。",
+        "{f}，我觉得这很关键。",
+        "对，{f}，这个我得表个态。",
+        "谁再提{f}，我就站谁这边。",
+        "别扯远了，{f}才是重点。",
+    };
+    // 话痨扩展句 4 变体（追加在话痨性格回复末尾，拉长发言）
+    static const char* const EX[] = {
+        "不过{某名}那边我也想听两句。",
+        "还有啊，{某名}怎么看这事？",
+        "顺带一提，{某名}今天有点安静。",
+        "话说回来，{某名}你觉得呢？",
+    };
+
+    NpcPersona per = NpcPersonaOf(npcName);
+
+    bool hasFact = mem != nullptr && !mem->facts.empty();
+    string base;
+
+    if (atHit)
+    {
+        AtKind k = NpcClassifyAt(content);
+
+        // 有事实记忆优先引用（50%），让"接话"落到实处而不是空泛议论
+        if (hasFact && NpcRandChance(50))
+        {
+            base = NpcReplacePh(ME[NpcRandInt(0, 11)], "{f}", mem->facts[NpcRandInt(0, (int)mem->facts.size() - 1)]);
+        }
+        else if (k == K_QUESTION)
+        {
+            base = NpcReplacePh(QA[NpcRandInt(0, 11)], "{x}", NpcPickWord(content));
+        }
+        else if (k == K_TAUNT && (per == P_Toxic || NpcRandChance(60)))
+        {
+            base = NpcReplacePh(TA[NpcRandInt(0, 7)], "{x}", NpcPickWord(content));
+        }
+        else if (k == K_JOKE)
+        {
+            base = NpcReplacePh(JO[NpcRandInt(0, 5)], "{x}", NpcPickWord(content));
+        }
+        else
+        {
+            base = NpcRoomReplyOffline(npcName, senderName, content, atHit);
+        }
+    }
+    else
+    {
+        // 非 @ 接话：有事实时一半概率提旧事，否则原逻辑（保 85%/30%/6% 相关线）
+        if (hasFact && NpcRandChance(50))
+        {
+            base = NpcReplacePh(ME[NpcRandInt(0, 11)], "{f}", mem->facts[NpcRandInt(0, (int)mem->facts.size() - 1)]);
+        }
+        else
+        {
+            base = NpcRoomReplyOffline(npcName, senderName, content, atHit);
+        }
+    }
+
+    // 性格后处理：句式长度与语气符随性格稳定（内容仍随机）
+    if (per == P_Talkative && NpcRandChance(40))
+    {
+        base += NpcReplacePh(EX[NpcRandInt(0, 3)], "{某名}", senderName.empty() ? "大家" : senderName);
+    }
+    else if (per == P_Cool && base.size() > 30)
+    {
+        // 高冷：截短到 30 字节（回退到 UTF-8 码点边界，避免半个汉字），
+        // 末尾补句号保持完整感
+        base = base.substr(0, 30);
+
+        while (!base.empty() && ((unsigned char)base.back() & 0xC0) == 0x80)
+        {
+            base.pop_back();
+        }
+
+        base += "。";
+    }
+    else if (per == P_Dizzy && NpcRandChance(30))
+    {
+        base += NpcRandChance(50) ? "~" : "……";
+    }
+
+    return base;
+}
+
 // 房内离线回复生成：atHit=true 必答（8 变体，嵌词）；false = 普通接话
 // （8 变体：点名型/闲聊型，嵌入发送者名字或内容词，营造在场感）
 inline string NpcRoomReplyOffline(const string& npcName, const string& senderName,
@@ -1927,11 +2125,13 @@ inline string NpcProactiveLine(const string& topic, const string& selfName)
     return SV[NpcRandInt(0, 9)];
 }
 
-// 在线对话调用结果：ok=拿到回复文本；text=发言（已限长净化）
+// 在线对话调用结果：ok=拿到回复文本；text=发言（已限长净化）；
+// status=透传 HTTP 状态码（0=网络层失败），仅诊断用，调用方不依赖
 struct NpcChatResult
 {
     bool ok;
     string text;
+    int status;
 };
 
 // 从模型响应提取纯发言文本：与 NpcExtractAction 同套路但容错更宽——
@@ -1974,11 +2174,13 @@ inline string NpcOfflineDecide(const NpcContext& ctx)
 // ============ 在线决策（WinHTTP 调 GLM API，失败回退离线） ============
 
 // 一次 HTTP 调用的结果：ok=拿到 200 响应体；retryable=值得重试
-// （连接失败/超时/模型繁忙），请求本身被拒（400/401）重试也白费
+// （连接失败/超时/模型繁忙），请求本身被拒（400/401）重试也白费；
+// status=HTTP 状态码（0=未连上/超时，网络层失败）——诊断"调不通"靠它
 struct NpcHttpResult
 {
     bool ok;
     bool retryable;
+    int status;
     string body;
 };
 
@@ -2116,6 +2318,7 @@ inline NpcHttpResult NpcHttpOnce(const string& url, const string& reqHeaders,
 
     r.ok = false;
     r.retryable = false;
+    r.status = 0;
 
     size_t schemeEnd = url.find("://");
 
@@ -2188,6 +2391,8 @@ inline NpcHttpResult NpcHttpOnce(const string& url, const string& reqHeaders,
         {
             status = 0;
         }
+
+        r.status = (int)status;
     }
 
     if (gotResponse && status == 200)
@@ -2441,6 +2646,13 @@ inline bool NpcKeyAvailable()
     return !NpcResolveKey().empty();
 }
 
+// 模型名：环境变量 WOLF_NPC_MODEL 可覆盖——账号未开通 glm-4.7-flash 时
+//（免费模型需要领取免费资源包，否则 API 返回 403）可切 glm-4.6/glm-4-flash
+inline string NpcModelName()
+{
+    return NpcEnvOr("WOLF_NPC_MODEL", "glm-4.7-flash");
+}
+
 // 在线决策总入口：读环境变量覆盖（URL/KEY/超时/重试次数），组装请求体，
 // 重试退避 2s/4s；任何一步失败都返回空串由调用方回退离线逻辑。
 // 阻塞时长上限 = (重试次数+1) × 超时 + 退避，必须同步但不可无限卡死
@@ -2457,7 +2669,7 @@ inline string NpcOnlineDecide(const NpcContext& ctx)
     int timeoutSec = NpcEnvInt("WOLF_NPC_TIMEOUT_SECONDS", 10, 1, 60);
     int retries = NpcEnvInt("WOLF_NPC_RETRIES", 1, 0, 5);
 
-    string body = "{\"model\":\"glm-4.7-flash\",\"messages\":[{\"role\":\"system\",\"content\":\""
+    string body = "{\"model\":\"" + NpcModelName() + "\",\"messages\":[{\"role\":\"system\",\"content\":\""
         + NpcJsonEscape(NpcBuildSystemPrompt(ctx)) + "\"},{\"role\":\"user\",\"content\":\""
         + NpcJsonEscape(NpcBuildUserText(ctx))
         + "\"}],\"temperature\":0.7}";
@@ -2488,6 +2700,7 @@ inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& send
     NpcChatResult r;
 
     r.ok = false;
+    r.status = 0;
 
     string url = NpcEnvOr("WOLF_NPC_API_URL",
                           "https://open.bigmodel.cn/api/paas/v4/chat/completions");
@@ -2510,7 +2723,7 @@ inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& send
 
     usr += "\n请只回复你的发言文本本身，不要加任何解释或标签。";
 
-    string body = "{\"model\":\"glm-4.7-flash\",\"messages\":[{\"role\":\"system\",\"content\":\""
+    string body = "{\"model\":\"" + NpcModelName() + "\",\"messages\":[{\"role\":\"system\",\"content\":\""
         + NpcJsonEscape(sys) + "\"},{\"role\":\"user\",\"content\":\""
         + NpcJsonEscape(usr) + "\"}],\"temperature\":0.9}";
     string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + key;
@@ -2520,6 +2733,9 @@ inline NpcChatResult NpcOnlineRoomChat(const string& npcName, const string& send
         if (attempt > 0) Sleep((attempt == 1 ? 2 : 4) * 1000);
 
         NpcHttpResult hr = NpcHttpOnce(url, headers, body, timeoutSec);
+
+        // 透传状态码：调用方日志打印诊断"调不通"是 4xx 拒绝还是网络层
+        r.status = hr.status;
 
         if (hr.ok)
         {

@@ -41,6 +41,16 @@ try {
                 if ($n -le 0) { break }
                 [void]$total.Append([System.Text.Encoding]::ASCII.GetString($bytes, 0, $n))
             } while (-not $total.ToString().Contains("`r`n`r`n"))
+            # body 可能比 header 后到（WinHttp 分段发送）：\r\n\r\n 出现后
+            # 在 300ms 空闲窗口内把剩余数据读完，避免 BODY 断言假 FAIL
+            $bodyQuiet = [DateTime]::Now.AddMilliseconds(300)
+            while ([DateTime]::Now -lt $bodyQuiet -and $stream.DataAvailable) {
+                $n = 0
+                try { $n = $stream.Read($bytes, 0, $bytes.Length) } catch { $n = -1 }
+                if ($n -le 0) { break }
+                [void]$total.Append([System.Text.Encoding]::ASCII.GetString($bytes, 0, $n))
+                $bodyQuiet = [DateTime]::Now.AddMilliseconds(300)
+            }
             $raw = $total.ToString()
             $reqLines = $raw -split "`r`n"
             $reqHead = $reqLines[0]

@@ -320,6 +320,8 @@ struct Room
     deque<string> roomChat;         // 房内最近聊天（含 NPC 发言，限 20 条；NPC 相关性接话
                                     // 判断的上下文，随房间生命周期自然清除，§22）
     map<string, ULONGLONG> npcChatTs; // NPC 名→上次普通接话 tick（防刷屏，普通接话 2s 间隔）
+    deque<pair<string, string> > npcRecent; // 最近真人聊天 <名字, 内容>（限 4 条，§24 记忆引用源）
+    vector<string> npcFacts;          // 提取的对话事实（"名字：内容"原句截断，限 6 条，§24）
     ULONGLONG lastHumanChatTs;        // 最后真人房内聊天 tick（主动发言判定用，§23.3）
     ULONGLONG lastProactiveTs;        // 上次 NPC 主动发言 tick（防连发，§23.3）
     mutable mutex chatMutex;        // 保护 roomChat/npcChatTs：在线 NPC 回复线程与连接线程
@@ -953,6 +955,16 @@ void NpcRoomBroadcast(Room* room, const string& npcName, const string& text, ULO
     room->npcChatTs[npcName] = nowTs;
 }
 
+// 记忆快照：锁内拷贝房间记忆（≤ 几 KB），供离线智能回复在锁外生成文本——
+// 模板生成不持锁，与在线回复线程的并发不引入新锁序
+void NpcMemSnapshot(Room* room, NpcMemCtx& mem, const string& npcName)
+{
+    lock_guard<mutex> lk(room->chatMutex);
+    mem.recentEvents.assign(room->npcRecent.begin(), room->npcRecent.end());
+    mem.facts = room->npcFacts;
+    mem.selfName = npcName;
+}
+
 // 在线 NPC 回复线程：HTTP 同步调用（超时=环境变量注入值）在独立线程跑，
 // 避免卡住 Start 的 select 主循环；成功用 AI 文本、失败回退离线模板——
 // @ 必答语义在任何模式下都必须有回复。广播前须查房间是否还活着
@@ -966,9 +978,10 @@ void NpcRoomOnlineReplyThread(const string& roomId, const string& npcName,
 
     NpcChatResult r = NpcOnlineRoomChat(npcName, senderName, content, atHit);
 
-    Log(string("NPC-ONLINE-RES ok=") + (r.ok ? "1" : "0") + " text=" + r.text);
-
-    string text = r.ok ? r.text : NpcRoomReplyOffline(npcName, senderName, content, atHit);
+    // status 透传：ok=0 时能区分「4xx 被拒（key 无权限/模型不存在）」与
+    // 「网络层失败（status=0）」——用户报"调不通"先看这一行
+    Log(string("NPC-ONLINE-RES ok=") + (r.ok ? "1" : "0")
+        + " status=" + to_string(r.status) + " text=" + r.text);
 
     lock_guard<mutex> lk(g_roomsMutex);
 
@@ -977,6 +990,13 @@ void NpcRoomOnlineReplyThread(const string& roomId, const string& npcName,
     if (it == g_rooms.end()) return;
 
     Room* room = it->second.get();
+
+    // 在线失败回退离线时也走智能版（记忆引用 + 性格），与纯离线路径一致
+    NpcMemCtx mem;
+
+    NpcMemSnapshot(room, mem, npcName);
+
+    string text = r.ok ? r.text : NpcRoomReplySmart(npcName, senderName, content, atHit, &mem);
 
     NpcRoomBroadcast(room, npcName, text, GetTickCount64());
 }
@@ -1019,7 +1039,11 @@ void NpcRoomSpeak(Room* room, const string& npcName, bool npcOnline,
         return;
     }
 
-    string text = NpcRoomReplyOffline(npcName, senderName, content, atHit);
+    NpcMemCtx mem;
+
+    NpcMemSnapshot(room, mem, npcName);
+
+    string text = NpcRoomReplySmart(npcName, senderName, content, atHit, &mem);
 
     NpcRoomBroadcast(room, npcName, text, GetTickCount64());
 }
@@ -2782,6 +2806,56 @@ void HandleCommand(SOCKET sock, const string& line)
             room->roomChat.push_back(ci.name + "：" + chat);
 
             if ((int)room->roomChat.size() > 20) room->roomChat.pop_front();
+
+            // §24 记忆：记最近真人聊天（4 条），并提取含关键信息的行入事实库
+            //（6 条）——NPC 回复可引用前文，制造"在听"感。保守提取：只收
+            // 含身份自称/怀疑/阵营词的行，原句截断引用，杜绝编造；
+            // @ 行（含 @ 前缀或"@名字"）不进事实库——否则 NPC 会复读
+            // "Alice：@NpcMany 某某"这种 @ 行本身，观感像复读机
+            room->npcRecent.push_back(make_pair(ci.name, chat));
+
+            if ((int)room->npcRecent.size() > 4) room->npcRecent.pop_front();
+
+            static const char* const FACT_KEYS[] = {
+                "我是", "预言家", "女巫", "守卫", "猎人", "丘比特", "狼人",
+                "怀疑", "查杀", "是狼", "不是", "同意", "支持", "反对",
+            };
+
+            bool hit = false;
+
+            if (chat.find('@') == string::npos)
+            {
+                for (size_t k = 0; k < sizeof(FACT_KEYS) / sizeof(FACT_KEYS[0]); ++k)
+                {
+                    if (chat.find(FACT_KEYS[k]) != string::npos)
+                    {
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+
+            if (hit)
+            {
+                string fact = ci.name + "：" + chat;
+
+                // 截断到 UTF-8 码点边界，避免模板嵌入时出现半个汉字的残缺字符
+                if (fact.size() > 40)
+                {
+                    fact = fact.substr(0, 40);
+
+                    while (!fact.empty() && ((unsigned char)fact.back() & 0xC0) == 0x80)
+                    {
+                        fact.pop_back();
+                    }
+
+                    fact += "…";
+                }
+
+                room->npcFacts.push_back(fact);
+
+                if ((int)room->npcFacts.size() > 6) room->npcFacts.pop_back();
+            }
 
             room->lastHumanChatTs = GetTickCount64();
         }
