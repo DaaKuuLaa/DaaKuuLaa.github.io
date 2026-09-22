@@ -921,6 +921,12 @@
           "projects": []
         },
         {
+          "name": "OIwiki_install.bat",
+          "path": "DaaKuuLaa.github.io/File/Tool/OIwiki_install.bat",
+          "type": "file",
+          "projects": []
+        },
+        {
           "name": "Rdpwrap.zip",
           "path": "DaaKuuLaa.github.io/File/Tool/Rdpwrap.zip",
           "type": "file",

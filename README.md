@@ -5,6 +5,7 @@
 ## 在线访问
 
 访问 [https://daakuulaa.github.io/](https://daakuulaa.github.io/)
+或自定义域名 [https://dkl.cc.cd/](https://dkl.cc.cd/)（`CNAME` 已配置，DNS 托管在 Cloudflare）
 
 ## 本地预览
 
@@ -13,6 +14,8 @@
 python -m http.server 8000
 ```
 然后在浏览器打开 `http://localhost:8000`
+
+> 提示：`file.html` / `work.html` 的网页上传/删除功能依赖已部署的上传 Worker（`https://upload.dkl.cc.cd`，见下文）。本地预览时若该域名不可达，仅文件浏览/下载可用。
 
 ### 使用 PathManager 管理文件/项目
 双击 `run_PathManager.bat` 打开图形工具，或：
@@ -40,9 +43,13 @@ DaaKuuLaa.github.io/
 ├── PathManager.exe      # 文件/项目管理工具（可执行文件）
 ├── run_http.bat         # 启动网页服务
 ├── run_PathManager.bat  # 启动 PathManager
-└── worker/              # Cloudflare Worker（网页上传后端）
-    ├── worker.js        # Worker 源码（处理上传、调 GitHub API）
-    └── wrangler.toml    # Cloudflare 部署配置
+├── worker/              # Cloudflare Worker（网页上传后端）
+│   ├── worker.js        # Worker 源码（处理上传、调 GitHub API）
+│   └── wrangler.toml    # Cloudflare 部署配置
+└── email/               # Cloudflare Email Worker（邮箱服务）
+    ├── src/index.js     # Worker 源码（收邮件、附件入库、Web 邮箱 API）
+    ├── wrangler.toml    # Cloudflare 部署配置（D1 + KV）
+    └── schema.sql       # D1 表结构
 ```
 
 ## 工具说明
@@ -110,6 +117,26 @@ wrangler secret put UPLOAD_PASSWORD_HASH   # 重新注入
 页面加载时优先用 localStorage 缓存渲染，后台用 `fetch` 拉取仓库 JSON；
 若仓库更新则覆盖缓存。`R` ×3 清缓存强制同步。缓存仅含 JSON 数据，不含密码或 Token。
 
+### 邮箱服务（Cloudflare Email Worker）
+
+邮箱前后台由 `email/` 目录下的 Cloudflare Email Worker 承载，绑定 `mail.dkl.cc.cd`，
+在浏览器即可收发/管理邮件（登录、收件箱、详情、附件、删除）。
+
+**依赖资源：**
+- D1 数据库 `daakuulaa-email`（表结构见 `schema.sql`，ID 已在 `wrangler.toml` 填好）
+- KV 命名空间 `SESSIONS`（登录会话）
+- Secret（`wrangler secret put` 注入，不写入源码）：`ADMIN_PASSWORD_HASH`、`GITHUB_PAT`
+- 邮件路由：在 Cloudflare 邮箱路由把 `*@dkl.cc.cd` 转发到本 Worker
+
+> ⚠️ 注意：当前设计会把邮件附件提交到公开仓库的 `Email/Attachments/` 目录，附件将公开发布；
+> 仅适合存放非重要内容，正式使用前建议改为 R2 私有存储（见上文的改进计划）。
+
+### 自定义域名
+
+- 主页：`dkl.cc.cd`（仓库根 `CNAME` 已声明，DNS 托管在 Cloudflare）
+- 上传 Worker：`upload.dkl.cc.cd`
+- 邮箱服务：`mail.dkl.cc.cd`
+
 ## 技术栈
 
 - HTML5 / CSS3 / Vanilla JavaScript
@@ -119,7 +146,7 @@ wrangler secret put UPLOAD_PASSWORD_HASH   # 重新注入
 ## 设计规范
 
 - 毛玻璃卡片风格（backdrop-filter: blur）
-- 明暗主题切换（D 或 D 键切换）
+- 明暗主题切换（按 D 键，`D` / `d` 均触发）
 - 响应式布局（支持移动端）
 - 文件列表：键盘导航（Tab 切换项目、Enter/Space 激活、方向键导航）
 
