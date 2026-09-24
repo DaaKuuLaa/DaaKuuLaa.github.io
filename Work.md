@@ -115,8 +115,11 @@
   - `tools`：JiYuTool.zip、Rdpwrap.zip
   - `games`：wolf.zip、demon_release.zip
   - `pathmanager`：PathManager.exe
+  - `testdata`：F.7z
 - `File/Game/*` 的解压产物不再入库，只保留压缩包形态（存于 Releases）
 - 索引 JSON 的 `path` 允许为 Releases 直链；前端对非 `DaaKuuLaa.github.io/` 前缀的地址原样直连
+- 仓库不再使用 Git LFS（原 `*.7z` 规则已移除），克隆无需安装 git-lfs
+- PathManager「自动扫描」会保留索引中的 Releases 直链，磁盘上不存在也不会丢失
 
 ## 更新日志
 - 2026-04-08: 初始版本，毛玻璃卡片个人主页

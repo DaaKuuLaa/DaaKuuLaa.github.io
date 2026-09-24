@@ -145,6 +145,7 @@ wrangler secret put UPLOAD_PASSWORD_HASH   # 重新注入
 | 工具集（JiYuTool、Rdpwrap） | https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/tag/tools |
 | 游戏（wolf、demon_release） | https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/tag/games |
 | PathManager（Windows x64） | https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/tag/pathmanager |
+| 测试数据（F.7z，约 130 MB） | https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/tag/testdata |
 
 文件管理器 / 项目管理工作页对这些条目直接给出 Releases 直链
 （`https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/download/<tag>/<file>`），
