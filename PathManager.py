@@ -4,24 +4,41 @@ import json
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog, 
-    QLabel, QComboBox, QMenu, QAction, QSplitter, QToolBar, QHeaderView
+    QLabel, QComboBox, QMenu, QAction, QSplitter, QToolBar, QHeaderView,
+    QMessageBox
 )
 from PyQt5.QtCore import Qt, QMimeData, QSize
 from PyQt5.QtGui import QDrag, QIcon, QFont
 
 class PathManager(QMainWindow):
-    def __init__(self):
+    def __init__(self, repo_dir=None):
         super().__init__()
         self.current_json = "work.json"
-        if getattr(sys, 'frozen', False):
-            self.json_dir = os.path.dirname(sys.executable)
-        else:
-            self.json_dir = os.path.dirname(os.path.abspath(__file__))
+        self.json_dir = repo_dir or self.default_json_dir()
         self.selected_items = []
         self.last_selected_item = None
         self.initUI()
         self.load_json()
     
+    @staticmethod
+    def default_json_dir():
+        """定位索引 JSON 所在目录：优先脚本/exe 所在目录，
+        若该目录没有 work.json / file.json 则逐级向上查找。"""
+        if getattr(sys, 'frozen', False):
+            base = os.path.dirname(sys.executable)
+        else:
+            base = os.path.dirname(os.path.abspath(__file__))
+        current = base
+        for _ in range(4):
+            if os.path.exists(os.path.join(current, "work.json")) or \
+               os.path.exists(os.path.join(current, "file.json")):
+                return current
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+        return base
+
     def initUI(self):
         self.setWindowTitle("PathManager")
         self.setGeometry(100, 100, 1000, 700)
@@ -228,22 +245,31 @@ class PathManager(QMainWindow):
         self.update_tree()
     
     def add_files(self):
-        # 使用 QFileDialog 获取文件和文件夹
-        dialog = QFileDialog()
-        dialog.setFileMode(QFileDialog.Directory)
-        dialog.setOption(QFileDialog.ShowDirsOnly, False)
-        
-        # 让用户选择是添加文件还是文件夹
-        choice = dialog.exec_()
-        
-        if choice:
-            # 获取选中的目录
-            directories = dialog.selectedFiles()
-            if directories:
-                for dir_path in directories:
-                    self.add_file_to_json(dir_path)
-                self.save_json()
-                self.update_tree()
+        """添加文件或文件夹：先选择类型，再打开对应对话框"""
+        box = QMessageBox(self)
+        box.setWindowTitle("添加")
+        box.setText("要添加什么？")
+        btn_files = box.addButton("文件", QMessageBox.AcceptRole)
+        btn_dir = box.addButton("文件夹", QMessageBox.AcceptRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec_()
+
+        clicked = box.clickedButton()
+        if clicked is btn_files:
+            paths = QFileDialog.getOpenFileNames(self, "选择文件")[0]
+        elif clicked is btn_dir:
+            directory = QFileDialog.getExistingDirectory(self, "选择文件夹")
+            paths = [directory] if directory else []
+        else:
+            return
+
+        if not paths:
+            return
+
+        for path in paths:
+            self.add_file_to_json(path)
+        self.save_json()
+        self.update_tree()
     
     def add_file_to_json(self, file_path):
         # 获取相对路径（从 json_dir 开始）
@@ -421,10 +447,14 @@ class PathManager(QMainWindow):
             last_parent = self.last_selected_item.parent()
             
             if parent == last_parent:
-                # 在同一父节点下
+                # 在同一父节点下（parent 为 None 表示顶层节点）
                 items = []
-                for i in range(parent.topLevelItemCount() if not parent else parent.childCount()):
-                    items.append(parent.topLevelItem(i) if not parent else parent.child(i))
+                if parent is None:
+                    for i in range(self.tree_widget.topLevelItemCount()):
+                        items.append(self.tree_widget.topLevelItem(i))
+                else:
+                    for i in range(parent.childCount()):
+                        items.append(parent.child(i))
                 
                 if item in items and self.last_selected_item in items:
                     start_idx = items.index(self.last_selected_item)
@@ -555,12 +585,9 @@ class PathManager(QMainWindow):
         index_item.setData(0, Qt.UserRole, index_project)
         parent.addChild(index_item)
         
-        # 添加子项目（如果有）
+        # 添加子项目（递归展开多级结构）
         if merged_projects:
-            for child_project in merged_projects:
-                child_item = QTreeWidgetItem([child_project["name"], child_project["type"], child_project["path"]])
-                child_item.setData(0, Qt.UserRole, child_project)
-                index_item.addChild(child_item)
+            self.add_children(index_item, merged_projects)
         
         # 展开 index 项
         index_item.setExpanded(True)
@@ -694,7 +721,13 @@ class PathManager(QMainWindow):
         return False
 
 if __name__ == "__main__":
+    repo_dir = None
+    args = sys.argv[1:]
+    if "--repo" in args:
+        index = args.index("--repo")
+        if index + 1 < len(args):
+            repo_dir = args[index + 1]
     app = QApplication(sys.argv)
-    window = PathManager()
+    window = PathManager(repo_dir=repo_dir)
     window.show()
     sys.exit(app.exec_())
