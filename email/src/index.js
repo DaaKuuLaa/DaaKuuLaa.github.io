@@ -472,6 +472,38 @@ async function handleDeleteEmail(request, env, session, emailId) {
   return json({ ok: true });
 }
 
+async function handleBatchDelete(request, env, session) {
+  if (!session) return json({ ok: false, error: '未登录' }, 401);
+
+  let body;
+  try { body = await request.json(); } catch { return json({ ok: false, error: '请求格式错误' }, 400); }
+
+  const ids = Array.isArray(body && body.ids)
+    ? body.ids.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 128)
+    : [];
+  if (ids.length === 0) return json({ ok: false, error: '未选择邮件' }, 400);
+  if (ids.length > 200) return json({ ok: false, error: '一次最多删除 200 封' }, 400);
+
+  let deleted = 0;
+  for (const id of ids) {
+    try { await deleteEmailAndAttachments(env, id); deleted++; }
+    catch (err) { console.error('batch delete failed:', id, err); }
+  }
+  return json({ ok: true, deleted });
+}
+
+async function handleClearInbox(request, env, session) {
+  if (!session) return json({ ok: false, error: '未登录' }, 401);
+
+  const { results } = await env.DB.prepare('SELECT id FROM emails').all();
+  let deleted = 0;
+  for (const row of (results || [])) {
+    try { await deleteEmailAndAttachments(env, row.id); deleted++; }
+    catch (err) { console.error('clear inbox failed:', row.id, err); }
+  }
+  return json({ ok: true, deleted });
+}
+
 async function handleGetAttachment(request, env, session, attId) {
   if (!session) return json({ ok: false, error: '未登录' }, 401);
 
@@ -541,6 +573,14 @@ async function handleFetch(request, env) {
   if (path === '/api/emails' && method === 'GET') {
     const session = await requireAuth(request, env);
     return handleListEmails(request, env, session);
+  }
+  if (path === '/api/emails/batch-delete' && method === 'POST') {
+    const session = await requireAuth(request, env);
+    return handleBatchDelete(request, env, session);
+  }
+  if (path === '/api/emails/clear' && method === 'POST') {
+    const session = await requireAuth(request, env);
+    return handleClearInbox(request, env, session);
   }
   if (path === '/api/cleanup' && method === 'POST') {
     const session = await requireAuth(request, env);
@@ -946,6 +986,7 @@ const App = {
   limit: 20,
   search: '',
   unread: 0,
+  selected: new Set(),
 
   async init() {
     // Check auth by trying to load emails
@@ -1182,6 +1223,12 @@ const App = {
         this.emails = data.emails || [];
         this.total = data.total || 0;
         this.unread = data.unread || 0;
+        if (this.selected instanceof Set) {
+          const visible = new Set(this.emails.map(e => e.id));
+          for (const id of Array.from(this.selected)) {
+            if (!visible.has(id)) this.selected.delete(id);
+          }
+        }
       }
     } catch(e) {
       this.emails = [];
@@ -1190,6 +1237,8 @@ const App = {
 
   renderInbox() {
     const totalPages = Math.ceil(this.total / this.limit) || 1;
+    const sel = (this.selected instanceof Set) ? this.selected : (this.selected = new Set());
+    const selCount = sel.size;
     let html = \`
     <div class="nav-bar">
       <div class="nav-left">
@@ -1201,6 +1250,9 @@ const App = {
           <input type="text" id="search-input" placeholder="搜索邮件..." value="\${this.search}" onkeydown="if(event.key==='Enter'){App.search=this.value;App.page=1;App.render();}">
           <button class="btn btn-ghost btn-sm" onclick="App.search=document.getElementById('search-input').value;App.page=1;App.render();">搜索</button>
         </div>
+        <button class="btn btn-ghost btn-sm" onclick="App.toggleSelectAll()">全选/取消</button>
+        <button class="btn btn-ghost btn-sm" onclick="App.deleteSelected()">删除选中</button>
+        <button class="btn btn-danger btn-sm" onclick="App.clearInbox()">清空收件箱</button>
         <button class="btn btn-ghost btn-sm" onclick="App.showChangePassword()">修改密码</button>
         <button class="btn btn-ghost btn-sm" onclick="App.logout()">退出</button>
       </div>
@@ -1219,7 +1271,8 @@ const App = {
         const time = this.formatTime(email.received_at);
         const initial = (email.sender_name || email.sender_address || '?')[0].toUpperCase();
         html += \`
-        <div class="email-item \${email.is_read ? '' : 'unread'}" onclick="App.showEmail('\${email.id}')">
+        <div class="email-item \${email.is_read ? '' : 'unread'}" style="\${sel.has(email.id) ? 'outline:2px solid #4299e1;outline-offset:-2px;' : ''}" onclick="App.showEmail('\${email.id')">
+          <input type="checkbox" class="email-check" \${sel.has(email.id) ? 'checked' : ''} onclick="event.stopPropagation();App.toggleSelect('\${email.id')" style="width:auto;flex:0 0 auto;margin-right:10px;cursor:pointer;" title="选择这封邮件">
           <div class="email-avatar">\${initial}</div>
           <div class="email-body">
             <div class="email-sender">\${this.escape(email.sender_name || email.sender_address || '未知')}</div>
@@ -1323,6 +1376,55 @@ const App = {
     } catch(e) {
       showToast('删除失败', 'error');
     }
+  },
+
+  async toggleSelect(id) {
+    if (!(this.selected instanceof Set)) this.selected = new Set();
+    if (this.selected.has(id)) this.selected.delete(id); else this.selected.add(id);
+    this.renderInbox();
+  },
+
+  toggleSelectAll() {
+    if (!(this.selected instanceof Set)) this.selected = new Set();
+    const ids = this.emails.map(e => e.id);
+    const allSelected = ids.length > 0 && ids.every(id => this.selected.has(id));
+    if (allSelected) { ids.forEach(id => this.selected.delete(id)); }
+    else { ids.forEach(id => this.selected.add(id)); }
+    this.renderInbox();
+  },
+
+  async deleteSelected() {
+    const ids = Array.from((this.selected instanceof Set) ? this.selected : []);
+    if (ids.length === 0) { showToast('未选择邮件', 'error'); return; }
+    if (!confirm('确定删除选中的 ' + ids.length + ' 封邮件？')) return;
+    try {
+      const res = await api('/api/emails/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) });
+      const data = await res.json();
+      if (data.ok) {
+        this.selected = new Set();
+        showToast('已删除 ' + (data.deleted || 0) + ' 封', 'success');
+        this.render();
+      } else {
+        showToast(data.error || '删除失败', 'error');
+      }
+    } catch (e) { showToast('删除失败', 'error'); }
+  },
+
+  async clearInbox() {
+    if (!confirm('确定清空收件箱？')) return;
+    if (!confirm('再次确认：将删除全部邮件及其附件，且不可恢复！')) return;
+    try {
+      const res = await api('/api/emails/clear', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        this.selected = new Set();
+        this.page = 1;
+        showToast('已清空 ' + (data.deleted || 0) + ' 封', 'success');
+        this.render();
+      } else {
+        showToast(data.error || '清空失败', 'error');
+      }
+    } catch (e) { showToast('清空失败', 'error'); }
   },
 
   async logout() {
