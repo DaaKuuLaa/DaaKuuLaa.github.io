@@ -156,20 +156,38 @@
                 typeText = '网页';
             }
 
-            let downloadBtn = '';
-            if (item.type !== 'folder' && item.type !== 'index') {
-                downloadBtn = `<div class="download-btn" tabindex="0" role="button" aria-label="下载 ${item.name}" onclick="downloadFile(event, '${item.path}')">⬇️</div>`;
-            }
-
             fileItem.setAttribute('aria-label', item.name + '，' + typeText);
             fileItem.innerHTML = `
                 <div class="file-icon" aria-hidden="true">${icon}</div>
                 <div class="file-info">
-                    <div class="file-name">${item.name}</div>
-                    <div class="file-type">${typeText}</div>
+                    <div class="file-name"></div>
+                    <div class="file-type"></div>
                 </div>
-                ${downloadBtn}
             `;
+            fileItem.querySelector('.file-name').textContent = item.name;
+            fileItem.querySelector('.file-type').textContent = typeText;
+
+            if (item.type !== 'folder' && item.type !== 'index') {
+                const downloadBtn = document.createElement('div');
+                downloadBtn.className = 'download-btn';
+                downloadBtn.tabIndex = 0;
+                downloadBtn.setAttribute('role', 'button');
+                downloadBtn.setAttribute('aria-label', '下载 ' + item.name);
+                downloadBtn.textContent = '⬇️';
+                downloadBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    downloadFile(e, item.path);
+                });
+                downloadBtn.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        downloadFile(e, item.path);
+                    }
+                });
+                fileItem.appendChild(downloadBtn);
+            }
 
             let clickTimer = null;
             fileItem.addEventListener('click', (e) => {
@@ -252,28 +270,33 @@
     }
     window.hideErrorBanner = hideErrorBanner;
 
+    // 站点内资源形如 "DaaKuuLaa.github.io/File/xxx"；其余（如 GitHub Releases 资产直链）
+    // 视为外部资源，原样使用，不做前缀改写与代理。
     function generateUrls(path) {
-        let directUrl = path;
-        if (!directUrl.startsWith('http://') && !directUrl.startsWith('https://')) {
-            directUrl = 'https://' + directUrl;
-        }
-
         const domainPrefix = 'DaaKuuLaa.github.io/';
-        let relativePath = path;
-        if (relativePath.startsWith('http://')) {
-            relativePath = relativePath.replace('http://', '');
-        } else if (relativePath.startsWith('https://')) {
-            relativePath = relativePath.replace('https://', '');
+        let sitePath = path;
+        if (sitePath.startsWith('http://')) {
+            sitePath = sitePath.substring(7);
+        } else if (sitePath.startsWith('https://')) {
+            sitePath = sitePath.substring(8);
         }
 
-        if (relativePath.startsWith(domainPrefix)) {
-            relativePath = relativePath.substring(domainPrefix.length);
+        if (!sitePath.startsWith(domainPrefix)) {
+            let url = path;
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'https://' + url;
+            }
+            return { direct: url, proxy: url, external: true };
         }
 
+        const relativePath = sitePath.substring(domainPrefix.length);
         const githubBlobUrl = 'https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/blob/main/' + relativePath;
-        const proxyUrl = 'https://ghproxy.net/' + githubBlobUrl;
 
-        return { direct: directUrl, proxy: proxyUrl };
+        return {
+            direct: 'https://' + sitePath,
+            proxy: 'https://ghproxy.net/' + githubBlobUrl,
+            external: false
+        };
     }
 
     async function isLFSFile(url) {
@@ -385,6 +408,14 @@
         };
 
         try {
+            if (urls.external) {
+                if (await tryDownload([urls.direct])) { resetBtn(); return; }
+                if (await tryOpen([urls.direct])) { resetBtn(); return; }
+                showErrorBanner('下载失败，请稍后重试');
+                resetBtn();
+                return;
+            }
+
             const isLFS = await isLFSFile(urls.direct);
             if (isLFS) {
                 if (await tryDownload([urls.proxy])) { resetBtn(); return; }
@@ -652,6 +683,13 @@
 
         showErrorBanner('⏳ 正在尝试下载…');
         try {
+            if (urls.external) {
+                if (await tryDownload([urls.direct])) { hideErrorBanner(); return; }
+                if (await tryOpen([urls.direct])) { hideErrorBanner(); return; }
+                showErrorBanner('下载失败，请稍后重试');
+                return;
+            }
+
             const isLFS = await isLFSFile(urls.direct);
             if (isLFS) {
                 if (await tryDownload([urls.proxy])) { hideErrorBanner(); return; }

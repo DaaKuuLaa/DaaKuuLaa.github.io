@@ -9,6 +9,7 @@ __pycache__/
 build/
 dist/
 *.spec
+/PathManager.exe
 
 # 运行时日志
 *.log

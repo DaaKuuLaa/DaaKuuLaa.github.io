@@ -40,7 +40,6 @@ DaaKuuLaa.github.io/
 ├── file.json            # 文件管理器配置
 ├── work.json            # 项目管理工作配置
 ├── PathManager.py       # 文件/项目管理工具（源码）
-├── PathManager.exe      # 文件/项目管理工具（可执行文件）
 ├── run_http.bat         # 启动网页服务
 ├── run_PathManager.bat  # 启动 PathManager
 ├── worker/              # Cloudflare Worker（网页上传后端）
@@ -120,7 +119,7 @@ wrangler secret put UPLOAD_PASSWORD_HASH   # 重新注入
 ### 邮箱服务（Cloudflare Email Worker）
 
 邮箱前后台由 `email/` 目录下的 Cloudflare Email Worker 承载，绑定 `mail.dkl.cc.cd`，
-在浏览器即可收发/管理邮件（登录、收件箱、详情、附件、删除）。
+在浏览器即可收发/管理邮件（登录、收件箱、搜索、多选、批量删除、一键清空、详情、附件）。
 
 **依赖资源：**
 - D1 数据库 `daakuulaa-email`（表结构见 `schema.sql`，ID 已在 `wrangler.toml` 填好）
@@ -136,6 +135,20 @@ wrangler secret put UPLOAD_PASSWORD_HASH   # 重新注入
 - 主页：`dkl.cc.cd`（仓库根 `CNAME` 已声明，DNS 托管在 Cloudflare）
 - 上传 Worker：`upload.dkl.cc.cd`
 - 邮箱服务：`mail.dkl.cc.cd`
+
+## 下载（GitHub Releases）
+
+较大的二进制文件统一放在 GitHub Releases，仓库内不再保存，下载链接保持稳定：
+
+| 资源 | 页面 |
+| --- | --- |
+| 工具集（JiYuTool、Rdpwrap） | https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/tag/tools |
+| 游戏（wolf、demon_release） | https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/tag/games |
+| PathManager（Windows x64） | https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/tag/pathmanager |
+
+文件管理器 / 项目管理工作页对这些条目直接给出 Releases 直链
+（`https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/download/<tag>/<file>`），
+前端对非 `DaaKuuLaa.github.io/` 前缀的地址按外部直链处理，不做前缀改写与 ghproxy 代理。
 
 ## 技术栈
 

@@ -1,7 +1,7 @@
 # AI 工作规范
 
 ## 项目信息
-- 项目路径：`a:\DKL\DaaKuuLaa.github.io\`
+- 项目路径：`D:\DKL\DaaKuuLaa.github.io\`
 - 项目类型：个人主页网站
 - GitHub 用户：DaaKuuLaa
 
@@ -109,6 +109,15 @@
 - 文件管理器：`a:\DKL\DaaKuuLaa.github.io\File\`
 - 项目管理工作：`a:\DKL\DaaKuuLaa.github.io\Work\`
 
+## 资源发布规范
+- 较大的二进制（工具包、游戏包、打包产物）统一发布到 GitHub Releases，仓库内不保存
+- Release 标签与资产名保持稳定，更新时覆盖同名资产，下载链接不变
+  - `tools`：JiYuTool.zip、Rdpwrap.zip
+  - `games`：wolf.zip、demon_release.zip
+  - `pathmanager`：PathManager.exe
+- `File/Game/*` 的解压产物不再入库，只保留压缩包形态（存于 Releases）
+- 索引 JSON 的 `path` 允许为 Releases 直链；前端对非 `DaaKuuLaa.github.io/` 前缀的地址原样直连
+
 ## 更新日志
 - 2026-04-08: 初始版本，毛玻璃卡片个人主页
 - 2026-04-09: 添加文件管理器和项目管理工作页面，支持明暗主题切换
@@ -137,6 +146,6 @@
 
 ### 打包说明
 - 脚本文件：`PathManager.py`
-- 可执行文件：`PathManager.exe`（位于主目录下）
+- 可执行文件：见 GitHub Releases `pathmanager`（本地打包生成，不再纳入版本控制）
 - 打包命令：`pyinstaller --onefile --windowed --name PathManager PathManager.py`
 - 生成的 exe 文件会自动复制到主目录下
