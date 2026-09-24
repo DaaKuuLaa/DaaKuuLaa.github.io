@@ -367,10 +367,61 @@ class PathManager(QMainWindow):
     def scan_directory(self):
         target_dir = os.path.join(self.json_dir, "Work" if self.current_json == "work.json" else "File")
         if os.path.exists(target_dir):
+            # 先记录外部直链节点（如 GitHub Releases 地址），扫描后合并回去，避免被磁盘扫描覆盖
+            externals = []
+            self.collect_external_nodes(self.data, None, externals)
             self.data["projects"] = []
             self.scan_directory_full(target_dir, self.data["projects"])
+            self.restore_external_nodes(externals)
             self.save_json()
             self.update_tree()
+
+    def collect_external_nodes(self, node, parent_path, out):
+        """收集 path 为 http(s) 直链的节点，连同其父目录路径一起记录"""
+        path = node.get("path") or ""
+        if path.startswith("http://") or path.startswith("https://"):
+            out.append((parent_path, dict(node)))
+            return
+        for child in node.get("projects") or []:
+            self.collect_external_nodes(child, path, out)
+
+    def restore_external_nodes(self, externals):
+        """把外部直链节点合并回扫描结果，父目录缺失时按 path 规则补建"""
+        for parent_path, node in externals:
+            if not parent_path:
+                continue
+            folder = self.ensure_folder_node(self.data, parent_path)
+            if folder is None:
+                continue
+            children = folder.setdefault("projects", [])
+            children[:] = [c for c in children if c.get("name") != node.get("name")]
+            children.append(node)
+
+    def ensure_folder_node(self, root, folder_path):
+        """按 path 在树中定位目录节点，缺失的中间目录自动补建"""
+        root_path = (root.get("path") or "").rstrip("/")
+        if folder_path.rstrip("/") == root_path:
+            return root
+        prefix = root_path + "/"
+        if not folder_path.startswith(prefix):
+            return None
+        node = root
+        for part in [p for p in folder_path[len(prefix):].split("/") if p]:
+            child = None
+            for c in node.get("projects") or []:
+                if c.get("name") == part and c.get("type") in ("folder", "index"):
+                    child = c
+                    break
+            if child is None:
+                child = {
+                    "name": part,
+                    "path": (node.get("path") or "").rstrip("/") + "/" + part,
+                    "type": "folder",
+                    "projects": []
+                }
+                node.setdefault("projects", []).append(child)
+            node = child
+        return node
     
     def scan_directory_full(self, directory, projects):
         for item in os.listdir(directory):
