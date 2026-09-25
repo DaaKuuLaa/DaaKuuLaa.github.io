@@ -63,6 +63,12 @@
           "path": "https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/download/tools/Rdpwrap.zip",
           "type": "file",
           "projects": []
+        },
+        {
+          "name": "RoomTool.zip",
+          "path": "https://github.com/DaaKuuLaa/DaaKuuLaa.github.io/releases/download/tools/RoomTool.zip",
+          "type": "file",
+          "projects": []
         }
       ]
     }
