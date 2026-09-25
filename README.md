@@ -61,6 +61,7 @@ DaaKuuLaa.github.io/
 - 文件/文件夹的添加、删除、拖拽移动
 - 合并多个项目为 index 类型
 - 切换 work.json / file.json
+- 发布管理器：上传 zip 一键发布/更新 GitHub Releases，并自动同步索引中的 Path
 
 **快捷键：**
 - Ctrl + 点击：多选/取消选择
@@ -72,6 +73,32 @@ DaaKuuLaa.github.io/
 ```bash
 pyinstaller --onefile --windowed --name PathManager PathManager.py
 ```
+
+### 发布管理器（PathManager 工具栏 📦）
+
+发布大体积工具包时不必再手动开网页拖文件，PathManager 直接对接 GitHub Releases：
+
+- **新建工具**：选择 zip → 自动确定分类与资产名 → 创建/复用对应的 Release →
+  上传资产 → 把 `https://github.com/.../releases/download/<tag>/<资产名>` 写进 `file.json`
+- **更新工具**：从索引里已有的 Releases 条目中选一个 → 选择新版本 zip →
+  先删同名旧资产再用**同名**重新上传，因此下载链接与索引 Path 完全不变
+
+分类目录与 Release tag 沿用仓库既有约定（见下表），资产名一旦确定就长期不变：
+
+| 索引目录 | Release tag | Release 标题 |
+| --- | --- | --- |
+| `File/Tool` | `tools` | 工具 Tools |
+| `File/Game` | `games` | 游戏 Games |
+| `File/Test` | `testdata` | 测试数据 (File/Test) |
+
+**Token 配置：** 需要一个对本仓库有 `Contents: read/write` 权限的 PAT。
+按优先级取：环境变量 `GH_TOKEN` / `GITHUB_TOKEN` → 仓库根目录下的
+`.pathmanager_token`（对话框里的「设置 Token…」会写入该文件，已在 `.gitignore` 中）。
+
+> 发布只负责 Releases 资产与本地索引文件，与 PathManager 其余功能一样**不会自动 git 提交**，
+> 需要自己 `git add file.json && git commit && git push` 后网页才会更新。
+
+**快捷键：**
 
 ### 网页上传与管理功能（Cloudflare Worker）
 

@@ -1,14 +1,261 @@
 import sys
 import os
+import re
 import json
+import urllib.parse
+import urllib.request
+import urllib.error
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog, 
     QLabel, QComboBox, QMenu, QAction, QSplitter, QToolBar, QHeaderView,
-    QMessageBox
+    QMessageBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
+    QLineEdit, QProgressBar, QPlainTextEdit, QInputDialog
 )
-from PyQt5.QtCore import Qt, QMimeData, QSize
+from PyQt5.QtCore import Qt, QMimeData, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QDrag, QIcon, QFont
+
+# ---------------------------------------------------------------------------
+# GitHub Releases 发布支持
+#
+# 沿用仓库既有 Releases 的约定（见 README「下载（GitHub Releases）」）：
+#   * 分类目录对应固定 tag：File/Tool -> tools、File/Game -> games、File/Test -> testdata
+#   * 资产名 = 工具包文件名，长期保持不变
+#   * 更新时覆盖同名资产，下载链接不变（file.json 里的 path 无需改动）
+#   * 索引条目形如 {name, path: <releases 直链>, type: "file", projects: []}
+# ---------------------------------------------------------------------------
+
+REPO_OWNER = "DaaKuuLaa"
+REPO_NAME = "DaaKuuLaa.github.io"
+REPO_BRANCH = "main"
+GH_API_BASE = "https://api.github.com"
+GH_UPLOAD_BASE = "https://uploads.github.com"
+RELEASES_DOWNLOAD_BASE = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download"
+TOKEN_FILE_NAME = ".pathmanager_token"
+
+# (索引目录（与 file.json 中的 path 同格式）, release tag, release 标题)
+RELEASE_CATEGORIES = [
+    ("DaaKuuLaa.github.io/File/Tool", "tools", "工具 Tools"),
+    ("DaaKuuLaa.github.io/File/Game", "games", "游戏 Games"),
+    ("DaaKuuLaa.github.io/File/Test", "testdata", "测试数据 (File/Test)"),
+]
+RELEASE_CATEGORY_BY_FOLDER = {item[0]: item for item in RELEASE_CATEGORIES}
+
+
+class ReleaseError(Exception):
+    """发布流程中可预期的错误，消息直接展示给用户。"""
+
+
+def release_download_url(tag, asset_name):
+    """拼出与既有条目完全一致格式的下载直链。"""
+    return f"{RELEASES_DOWNLOAD_BASE}/{tag}/{asset_name}"
+
+
+def parse_release_download_url(url):
+    """把 Releases 直链还原为 (tag, asset_name)；不是本仓库 Releases 直链时返回 None。"""
+    if not isinstance(url, str):
+        return None
+    prefix = RELEASES_DOWNLOAD_BASE + "/"
+    if not url.startswith(prefix):
+        return None
+    tag, _, asset_name = url[len(prefix):].partition("/")
+    if not tag or not asset_name or "/" in asset_name:
+        return None
+    return tag, asset_name
+
+
+def sanitize_asset_name(name):
+    """与网页端 Worker 的 sanitizeFileName 保持一致的清洗规则。"""
+    base = os.path.basename((name or "").strip()) or "unnamed"
+    return re.sub(r"[^\w.\-]", "_", base)
+
+
+class GitHubReleases:
+    """极简 GitHub Releases 客户端：只用标准库，便于打包进单文件 exe。"""
+
+    def __init__(self, token, api_base=GH_API_BASE, upload_base=GH_UPLOAD_BASE, timeout=120):
+        self.token = token
+        self.api_base = api_base.rstrip("/")
+        self.upload_base = upload_base.rstrip("/")
+        self.timeout = timeout
+
+    def _headers(self, extra=None):
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "daakuulaa-pathmanager",
+        }
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _send(self, method, url, data=None, headers=None):
+        request = urllib.request.Request(
+            url, data=data, method=method, headers=headers or self._headers())
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    def _api(self, method, path, payload=None):
+        url = f"{self.api_base}/repos/{REPO_OWNER}/{REPO_NAME}{path}"
+        data = None
+        headers = self._headers()
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        status, body = self._send(method, url, data, headers)
+        parsed = None
+        if body:
+            try:
+                parsed = json.loads(body.decode("utf-8"))
+            except ValueError:
+                parsed = None
+        if status >= 400:
+            detail = parsed.get("message") if isinstance(parsed, dict) else None
+            suffix = detail or repr(body[:200])
+            raise ReleaseError(f"GitHub API {method} {path} 返回 HTTP {status}：{suffix}")
+        return parsed
+
+    def get_release(self, tag):
+        """按 tag 查询 Release；不存在返回 None。"""
+        url = (f"{self.api_base}/repos/{REPO_OWNER}/{REPO_NAME}"
+               f"/releases/tags/{urllib.parse.quote(tag)}")
+        status, body = self._send("GET", url)
+        if status == 404:
+            return None
+        if status >= 400:
+            raise ReleaseError(f"查询 Release「{tag}」失败：HTTP {status} {body[:200]!r}")
+        return json.loads(body.decode("utf-8"))
+
+    def create_release(self, tag, title, body=""):
+        return self._api("POST", "/releases", {
+            "tag_name": tag,
+            "name": title,
+            "body": body,
+            "target_commitish": REPO_BRANCH,
+            "draft": False,
+            "prerelease": False,
+        })
+
+    @staticmethod
+    def find_asset(release, asset_name):
+        for asset in release.get("assets") or []:
+            if asset.get("name") == asset_name:
+                return asset
+        return None
+
+    def delete_asset(self, asset_id):
+        self._api("DELETE", f"/releases/assets/{asset_id}")
+
+    def upload_asset(self, release, asset_name, file_path):
+        """以固定资产名流式上传（不把整包读进内存）。"""
+        size = os.path.getsize(file_path)
+        url = (f"{self.upload_base}/repos/{REPO_OWNER}/{REPO_NAME}"
+               f"/releases/{release['id']}/assets?"
+               + urllib.parse.urlencode({"name": asset_name}))
+        headers = self._headers({
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size),
+        })
+        with open(file_path, "rb") as handle:
+            request = urllib.request.Request(url, data=handle, method="POST", headers=headers)
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                raise ReleaseError(f"上传资产「{asset_name}」失败：HTTP {exc.code} {exc.read()[:300]!r}")
+
+
+def _ensure_release(client, tag, title, log):
+    release = client.get_release(tag)
+    if release is None:
+        log(f"Release「{tag}」不存在，正在创建（标题：{title}）…")
+        release = client.create_release(
+            tag, title,
+            f"{title} 资源。资产文件名保持稳定，更新时覆盖同名资产即可，下载链接不变。")
+    else:
+        log(f"已找到 Release「{tag}」（{release.get('name') or tag}）")
+    return release
+
+
+def _check_local_file(file_path):
+    if not os.path.isfile(file_path):
+        raise ReleaseError(f"找不到文件：{file_path}")
+
+
+def publish_new_tool(token, folder_path, asset_name, file_path, log=None, client=None):
+    """首次发布工具：只上传资产，索引由调用方写入。返回下载直链。"""
+    category = RELEASE_CATEGORY_BY_FOLDER.get(folder_path)
+    if category is None:
+        raise ReleaseError(f"未知分类目录：{folder_path}")
+    _, tag, title = category
+    asset_name = sanitize_asset_name(asset_name)
+    if not asset_name:
+        raise ReleaseError("资产名为空")
+    _check_local_file(file_path)
+
+    log = log or (lambda message: None)
+    client = client or GitHubReleases(token)
+    release = _ensure_release(client, tag, title, log)
+    if client.find_asset(release, asset_name) is not None:
+        raise ReleaseError(
+            f"Release「{tag}」中已存在资产「{asset_name}」。\n"
+            "该工具已发布过，请改用「更新工具」发布新版本。")
+    log(f"上传 {os.path.basename(file_path)}（{os.path.getsize(file_path):,} 字节）"
+        f"→ 资产名「{asset_name}」…")
+    client.upload_asset(release, asset_name, file_path)
+    url = release_download_url(tag, asset_name)
+    log(f"发布完成：{url}")
+    return url
+
+
+def publish_tool_update(token, tag, asset_name, file_path, log=None, client=None):
+    """更新已有工具：删除同名旧资产后原样重传，下载直链保持不变。"""
+    asset_name = sanitize_asset_name(asset_name)
+    if not asset_name:
+        raise ReleaseError("资产名为空")
+    _check_local_file(file_path)
+
+    log = log or (lambda message: None)
+    client = client or GitHubReleases(token)
+    release = client.get_release(tag)
+    if release is None:
+        raise ReleaseError(f"Release「{tag}」不存在")
+    existing = client.find_asset(release, asset_name)
+    if existing is None:
+        raise ReleaseError(f"Release「{tag}」中找不到资产「{asset_name}」")
+
+    log(f"删除旧版本「{asset_name}」(asset id={existing['id']})…")
+    client.delete_asset(existing["id"])
+    log(f"上传新版本（{os.path.getsize(file_path):,} 字节），资产名保持「{asset_name}」…")
+    client.upload_asset(release, asset_name, file_path)
+    url = release_download_url(tag, asset_name)
+    log(f"更新完成，下载链接不变：{url}")
+    return url
+
+
+class ReleaseJob(QThread):
+    """后台执行发布会话，避免界面卡死。"""
+
+    progressed = pyqtSignal(str)
+    succeeded = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, job, parent=None):
+        super().__init__(parent)
+        self._job = job
+
+    def run(self):
+        try:
+            result = self._job(self.progressed.emit)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+
 
 class PathManager(QMainWindow):
     def __init__(self, repo_dir=None):
@@ -116,9 +363,16 @@ class PathManager(QMainWindow):
         self.btn_scan.setToolTip("自动扫描")
         self.btn_scan.clicked.connect(self.scan_directory)
         
+        # 发布按钮（发布 / 更新 GitHub Releases 工具）
+        self.btn_release = QPushButton("📦")
+        self.btn_release.setFixedSize(35, 35)
+        self.btn_release.setToolTip("发布管理器：上传 zip 并发布/更新 GitHub Releases")
+        self.btn_release.clicked.connect(self.open_release_dialog)
+
         self.toolbar.addWidget(self.btn_clear)
         self.toolbar.addWidget(self.btn_add)
         self.toolbar.addWidget(self.btn_scan)
+        self.toolbar.addWidget(self.btn_release)
         
         main_layout.addWidget(self.toolbar)
         
@@ -480,6 +734,117 @@ class PathManager(QMainWindow):
             self.json_dir = directory
             self.load_json()
     
+    # ------------------------------------------------------------------
+    # GitHub Releases 发布（发布管理器）
+    # ------------------------------------------------------------------
+    def open_release_dialog(self):
+        dialog = ReleaseDialog(self, self)
+        dialog.exec_()
+
+    def token_path(self):
+        return os.path.join(self.json_dir, TOKEN_FILE_NAME)
+
+    def resolve_token(self):
+        """Token 来源：环境变量 GH_TOKEN / GITHUB_TOKEN → 本地 .pathmanager_token。
+
+        返回 (token, 来源说明)，都没配置时返回 (None, None)。
+        """
+        for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+            value = (os.environ.get(key) or "").strip()
+            if value:
+                return value, f"环境变量 {key}"
+        path = self.token_path()
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    value = handle.read().strip()
+            except OSError:
+                value = ""
+            if value:
+                return value, TOKEN_FILE_NAME
+        return None, None
+
+    def save_token(self, token):
+        with open(self.token_path(), "w", encoding="utf-8") as handle:
+            handle.write(token.strip())
+
+    def load_index_file(self, json_name):
+        path = os.path.join(self.json_dir, json_name)
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def save_index_file(self, json_name, data):
+        path = os.path.join(self.json_dir, json_name)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+
+    def refresh_view(self, json_name):
+        """索引被外部改写后刷新界面（供发布线程结束回主线程时调用）。"""
+        if json_name == self.current_json:
+            self.load_json()
+
+    @staticmethod
+    def index_name_for_folder(folder_path):
+        parts = [part for part in (folder_path or "").split("/") if part]
+        return "work.json" if "Work" in parts else "file.json"
+
+    def add_release_entry(self, folder_path, name, url):
+        """把 Releases 直链条目写入对应索引，返回被写入的索引文件名。
+
+        与扫描结果的格式保持一致：type 固定为 file、projects 为空、按名称排序插入；
+        同名条目已存在时只刷新其 path，保证链接始终指向最新版。
+        """
+        json_name = self.index_name_for_folder(folder_path)
+        data = self.load_index_file(json_name)
+        if data is None:
+            raise ReleaseError(f"找不到索引文件 {json_name}")
+        folder = self.ensure_folder_node(data, folder_path)
+        if folder is None:
+            raise ReleaseError(f"{json_name} 中无法定位目录 {folder_path}")
+
+        entry = {"name": name, "path": url, "type": "file", "projects": []}
+        children = folder.setdefault("projects", [])
+        for index, child in enumerate(children):
+            if child.get("name") == name:
+                children[index] = entry
+                self.save_index_file(json_name, data)
+                return json_name
+
+        key = name.lower()
+        position = len(children)
+        for index, child in enumerate(children):
+            if (child.get("name") or "").lower() > key:
+                position = index
+                break
+        children.insert(position, entry)
+        self.save_index_file(json_name, data)
+        return json_name
+
+    def collect_release_entries(self):
+        """扫描 file.json / work.json，收集所有 Releases 直链条目。"""
+        entries = []
+        for json_name in ("file.json", "work.json"):
+            data = self.load_index_file(json_name)
+            if data:
+                self._collect_release_entries(data, json_name, None, entries)
+        return entries
+
+    def _collect_release_entries(self, node, json_name, folder_path, out):
+        parsed = parse_release_download_url(node.get("path"))
+        if parsed:
+            out.append({
+                "json_name": json_name,
+                "folder_path": folder_path,
+                "name": node.get("name"),
+                "tag": parsed[0],
+                "asset_name": parsed[1],
+                "url": node.get("path"),
+            })
+        for child in node.get("projects") or []:
+            self._collect_release_entries(child, json_name, node.get("path"), out)
+
     def on_item_clicked(self, item, column):
         modifiers = QApplication.keyboardModifiers()
         
@@ -770,6 +1135,291 @@ class PathManager(QMainWindow):
                 if self.is_child_of(child_data, project):
                     return True
         return False
+
+class ReleaseDialog(QDialog):
+    """发布管理器：新建工具 / 更新工具版本，并自动维护索引里的 Path。"""
+
+    MODE_NEW = 0
+    MODE_UPDATE = 1
+
+    def __init__(self, manager, parent=None):
+        super().__init__(parent)
+        self.manager = manager
+        self.job_thread = None
+        self.existing_entries = []
+        self.auto_asset_name = ""
+        self.setWindowTitle("发布管理器 · GitHub Releases")
+        self.setMinimumWidth(640)
+        self.build_ui()
+        self.reload_token_status()
+        self.reload_existing_tools()
+        self.on_mode_changed(self.MODE_NEW)
+
+    # ---------------- 界面 ----------------
+    def build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        top = QFormLayout()
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItems(["新建工具（首次发布）", "更新工具（发布新版本）"])
+        self.combo_mode.currentIndexChanged.connect(self.on_mode_changed)
+        top.addRow("操作", self.combo_mode)
+
+        file_row = QHBoxLayout()
+        self.edit_file = QLineEdit()
+        self.edit_file.setPlaceholderText("选择要发布的压缩包（通常为 .zip）")
+        self.edit_file.textChanged.connect(self.on_file_changed)
+        btn_browse = QPushButton("浏览…")
+        btn_browse.clicked.connect(self.browse_file)
+        file_row.addWidget(self.edit_file)
+        file_row.addWidget(btn_browse)
+        top.addRow("压缩包文件", file_row)
+        layout.addLayout(top)
+
+        self.group_new = QGroupBox("新建工具")
+        form_new = QFormLayout(self.group_new)
+        self.combo_category = QComboBox()
+        for folder, tag, title in RELEASE_CATEGORIES:
+            self.combo_category.addItem(f"{folder}   →   Release「{tag}」", (folder, tag, title))
+        self.combo_category.currentIndexChanged.connect(self.refresh_preview)
+        form_new.addRow("目标分类", self.combo_category)
+        self.edit_asset_name = QLineEdit()
+        self.edit_asset_name.setPlaceholderText("资产名，默认取压缩包文件名并长期保持不变")
+        self.edit_asset_name.textChanged.connect(self.refresh_preview)
+        form_new.addRow("资产名", self.edit_asset_name)
+        layout.addWidget(self.group_new)
+
+        self.group_update = QGroupBox("更新工具")
+        form_update = QFormLayout(self.group_update)
+        self.combo_tool = QComboBox()
+        self.combo_tool.currentIndexChanged.connect(self.refresh_preview)
+        form_update.addRow("已有工具", self.combo_tool)
+        self.label_current = QLabel("—")
+        self.label_current.setWordWrap(True)
+        form_update.addRow("当前链接", self.label_current)
+        layout.addWidget(self.group_update)
+
+        preview_box = QGroupBox("发布后下载直链")
+        preview_layout = QVBoxLayout(preview_box)
+        self.label_preview = QLabel()
+        self.label_preview.setWordWrap(True)
+        self.label_preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        preview_layout.addWidget(self.label_preview)
+        layout.addWidget(preview_box)
+
+        token_row = QHBoxLayout()
+        self.label_token = QLabel()
+        btn_token = QPushButton("设置 Token…")
+        btn_token.clicked.connect(self.edit_token)
+        token_row.addWidget(self.label_token, 1)
+        token_row.addWidget(btn_token)
+        layout.addLayout(token_row)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMinimumHeight(150)
+        self.log_view.setPlaceholderText("发布日志…")
+        layout.addWidget(self.log_view)
+
+        buttons = QDialogButtonBox()
+        self.btn_publish = buttons.addButton("发布", QDialogButtonBox.ActionRole)
+        self.btn_publish.clicked.connect(self.publish)
+        btn_close = buttons.addButton("关闭", QDialogButtonBox.RejectRole)
+        btn_close.clicked.connect(self.request_close)
+        layout.addWidget(buttons)
+
+    # ---------------- 状态 ----------------
+    def append_log(self, message):
+        self.log_view.appendPlainText(message)
+
+    def reload_token_status(self):
+        token, source = self.manager.resolve_token()
+        if token:
+            self.label_token.setText(f"Token：已就绪（来源：{source}）")
+        else:
+            self.label_token.setText(
+                f"Token：未设置 · 可设环境变量 GH_TOKEN，或点右侧保存到 {TOKEN_FILE_NAME}")
+
+    def reload_existing_tools(self):
+        self.existing_entries = self.manager.collect_release_entries()
+        self.combo_tool.clear()
+        for entry in self.existing_entries:
+            self.combo_tool.addItem(
+                f"{entry['name']}   →   Release「{entry['tag']}」（{entry['json_name']}）", entry)
+        if not self.existing_entries:
+            self.combo_tool.addItem("（索引中还没有 Releases 直链条目）", None)
+
+    def selected_entry(self):
+        return self.combo_tool.currentData()
+
+    def selected_category(self):
+        return self.combo_category.currentData()
+
+    def set_busy(self, busy):
+        self.progress.setVisible(busy)
+        for widget in (self.btn_publish, self.combo_mode, self.combo_category,
+                       self.combo_tool, self.edit_file, self.edit_asset_name):
+            widget.setEnabled(not busy)
+
+    # ---------------- 交互 ----------------
+    def on_mode_changed(self, index):
+        is_new = index == self.MODE_NEW
+        self.group_new.setVisible(is_new)
+        self.group_update.setVisible(not is_new)
+        self.refresh_preview()
+
+    def browse_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择要发布的压缩包", "", "压缩包 (*.zip *.7z *.tar.gz);;所有文件 (*)")
+        if path:
+            self.edit_file.setText(path)
+
+    def on_file_changed(self, text):
+        if self.combo_mode.currentIndex() == self.MODE_NEW:
+            current = self.edit_asset_name.text().strip()
+            if not current or current == self.auto_asset_name:
+                self.auto_asset_name = sanitize_asset_name(text) if text else ""
+                self.edit_asset_name.setText(self.auto_asset_name)
+        self.refresh_preview()
+
+    def refresh_preview(self):
+        if not hasattr(self, "label_preview"):
+            return
+        if self.combo_mode.currentIndex() == self.MODE_UPDATE:
+            entry = self.selected_entry()
+            if entry:
+                self.label_current.setText(entry["url"])
+                self.label_preview.setText(
+                    f"{entry['url']}\n\n更新后链接保持不变，只把内容替换为所选压缩包。")
+            else:
+                self.label_current.setText("—")
+                self.label_preview.setText("索引中还没有可更新的 Releases 条目。")
+            return
+        category = self.selected_category()
+        asset_name = self.edit_asset_name.text().strip()
+        if category and asset_name:
+            folder, tag, _title = category
+            target_json = self.manager.index_name_for_folder(folder)
+            self.label_preview.setText(
+                f"{release_download_url(tag, asset_name)}\n\n"
+                f"会写入 {target_json} 的 {folder} 目录（type=file）。")
+        else:
+            self.label_preview.setText("选择压缩包后会按分类与资产名生成链接。")
+
+    def edit_token(self):
+        token, _source = self.manager.resolve_token()
+        text, ok = QInputDialog.getText(
+            self, "设置 GitHub Token",
+            "粘贴具有本仓库 Contents: read/write 权限的 PAT：\n"
+            f"（保存到 {self.manager.token_path()}，该文件已在 .gitignore 中）",
+            QLineEdit.Password, token or "")
+        if not ok:
+            return
+        text = text.strip()
+        if not text:
+            QMessageBox.warning(self, "设置 Token", "Token 不能为空。")
+            return
+        try:
+            self.manager.save_token(text)
+        except OSError as exc:
+            QMessageBox.critical(self, "设置 Token", f"保存失败：{exc}")
+            return
+        self.reload_token_status()
+        self.append_log(f"Token 已保存到 {self.manager.token_path()}")
+
+    # ---------------- 发布 ----------------
+    def publish(self):
+        if self.job_thread is not None and self.job_thread.isRunning():
+            return
+        token, _source = self.manager.resolve_token()
+        if not token:
+            QMessageBox.warning(
+                self, "缺少 Token",
+                "未找到 GitHub Token。\n\n请点「设置 Token…」填写具有 Contents: read/write "
+                "权限的 PAT，或设置环境变量 GH_TOKEN。")
+            return
+        file_path = self.edit_file.text().strip()
+        if not file_path or not os.path.isfile(file_path):
+            QMessageBox.warning(self, "缺少文件", "请选择要发布的压缩包文件。")
+            return
+
+        if self.combo_mode.currentIndex() == self.MODE_NEW:
+            category = self.selected_category()
+            asset_name = sanitize_asset_name(self.edit_asset_name.text())
+            if not asset_name:
+                QMessageBox.warning(self, "缺少资产名", "请填写资产名（发布后保持不变）。")
+                return
+            folder_path, tag, _title = category
+            json_name = self.manager.index_name_for_folder(folder_path)
+            if self.manager.load_index_file(json_name) is None:
+                QMessageBox.critical(self, "发布失败", f"找不到索引文件 {json_name}。")
+                return
+
+            def job(log):
+                url = publish_new_tool(token, folder_path, asset_name, file_path, log)
+                self.manager.add_release_entry(folder_path, asset_name, url)
+                log(f"已写入索引 {json_name}：{folder_path}/{asset_name}")
+                return {
+                    "summary": f"新建工具 {asset_name} → Release「{tag}」",
+                    "url": url,
+                    "json_name": json_name,
+                }
+            summary = f"新建工具 {asset_name} → Release「{tag}」"
+        else:
+            entry = self.selected_entry()
+            if not entry:
+                QMessageBox.warning(self, "没有可更新的工具", "索引中还没有 Releases 直链条目。")
+                return
+
+            def job(log):
+                url = publish_tool_update(
+                    token, entry["tag"], entry["asset_name"], file_path, log)
+                return {
+                    "summary": f"更新工具 {entry['name']}（Release「{entry['tag']}」）",
+                    "url": url,
+                    "json_name": entry["json_name"],
+                }
+            summary = f"更新工具 {entry['name']}（Release「{entry['tag']}」）"
+
+        self.set_busy(True)
+        self.append_log(f"— {summary} —")
+        self.job_thread = ReleaseJob(job, self)
+        self.job_thread.progressed.connect(self.append_log)
+        self.job_thread.succeeded.connect(self.on_publish_succeeded)
+        self.job_thread.failed.connect(self.on_publish_failed)
+        self.job_thread.start()
+
+    def on_publish_succeeded(self, result):
+        self.set_busy(False)
+        self.reload_existing_tools()
+        self.manager.refresh_view(result.get("json_name"))
+        QMessageBox.information(
+            self, "发布成功", f"{result['summary']}\n\n{result['url']}")
+
+    def on_publish_failed(self, message):
+        self.set_busy(False)
+        self.append_log(f"失败：{message}")
+        QMessageBox.critical(self, "发布失败", message)
+
+    def request_close(self):
+        if self.job_thread is not None and self.job_thread.isRunning():
+            QMessageBox.information(self, "发布进行中", "请等待当前发布完成后再关闭。")
+            return
+        self.reject()
+
+    def closeEvent(self, event):
+        if self.job_thread is not None and self.job_thread.isRunning():
+            QMessageBox.information(self, "发布进行中", "请等待当前发布完成后再关闭。")
+            event.ignore()
+            return
+        super().closeEvent(event)
+
 
 if __name__ == "__main__":
     repo_dir = None

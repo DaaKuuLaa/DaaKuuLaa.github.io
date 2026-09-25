@@ -14,6 +14,9 @@ dist/
 # 运行时日志
 *.log
 
+# PathManager 发布管理器使用的 GitHub PAT（本地保存，切勿提交）
+.pathmanager_token
+
 # 编辑器
 .vscode/
 .idea/
