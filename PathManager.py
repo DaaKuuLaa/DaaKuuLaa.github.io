@@ -37,7 +37,7 @@ TOKEN_FILE_NAME = ".pathmanager_token"
 RELEASE_CATEGORIES = [
     ("DaaKuuLaa.github.io/File/Tool", "tools", "工具 Tools"),
     ("DaaKuuLaa.github.io/File/Game", "games", "游戏 Games"),
-    ("DaaKuuLaa.github.io/File/Test", "testdata", "测试数据 (File/Test)"),
+    ("DaaKuuLaa.github.io/File/Test", "testdata", "测试数据"),
 ]
 RELEASE_CATEGORY_BY_FOLDER = {item[0]: item for item in RELEASE_CATEGORIES}
 
@@ -172,12 +172,12 @@ class GitHubReleases:
 def _ensure_release(client, tag, title, log):
     release = client.get_release(tag)
     if release is None:
-        log(f"Release「{tag}」不存在，正在创建（标题：{title}）…")
+        log(f"Release「{tag}」不存在，正在创建，标题 {title}…")
         release = client.create_release(
             tag, title,
             f"{title} 资源。资产文件名保持稳定，更新时覆盖同名资产即可，下载链接不变。")
     else:
-        log(f"已找到 Release「{tag}」（{release.get('name') or tag}）")
+        log(f"已找到 Release「{tag}」 · {release.get('name') or tag}")
     return release
 
 
@@ -204,7 +204,7 @@ def publish_new_tool(token, folder_path, asset_name, file_path, log=None, client
         raise ReleaseError(
             f"Release「{tag}」中已存在资产「{asset_name}」。\n"
             "该工具已发布过，请改用「更新工具」发布新版本。")
-    log(f"上传 {os.path.basename(file_path)}（{os.path.getsize(file_path):,} 字节）"
+    log(f"上传 {os.path.basename(file_path)} · {os.path.getsize(file_path):,} 字节"
         f"→ 资产名「{asset_name}」…")
     client.upload_asset(release, asset_name, file_path)
     url = release_download_url(tag, asset_name)
@@ -228,9 +228,9 @@ def publish_tool_update(token, tag, asset_name, file_path, log=None, client=None
     if existing is None:
         raise ReleaseError(f"Release「{tag}」中找不到资产「{asset_name}」")
 
-    log(f"删除旧版本「{asset_name}」(asset id={existing['id']})…")
+    log(f"删除旧版本「{asset_name}」 · asset id={existing['id']}…")
     client.delete_asset(existing["id"])
-    log(f"上传新版本（{os.path.getsize(file_path):,} 字节），资产名保持「{asset_name}」…")
+    log(f"上传新版本 · {os.path.getsize(file_path):,} 字节，资产名保持「{asset_name}」…")
     client.upload_asset(release, asset_name, file_path)
     url = release_download_url(tag, asset_name)
     log(f"更新完成，下载链接不变：{url}")
@@ -1162,13 +1162,13 @@ class ReleaseDialog(QDialog):
 
         top = QFormLayout()
         self.combo_mode = QComboBox()
-        self.combo_mode.addItems(["新建工具（首次发布）", "更新工具（发布新版本）"])
+        self.combo_mode.addItems(["新建工具", "更新工具"])
         self.combo_mode.currentIndexChanged.connect(self.on_mode_changed)
         top.addRow("操作", self.combo_mode)
 
         file_row = QHBoxLayout()
         self.edit_file = QLineEdit()
-        self.edit_file.setPlaceholderText("选择要发布的压缩包（通常为 .zip）")
+        self.edit_file.setPlaceholderText("选择要发布的压缩包")
         self.edit_file.textChanged.connect(self.on_file_changed)
         btn_browse = QPushButton("浏览…")
         btn_browse.clicked.connect(self.browse_file)
@@ -1241,7 +1241,7 @@ class ReleaseDialog(QDialog):
     def reload_token_status(self):
         token, source = self.manager.resolve_token()
         if token:
-            self.label_token.setText(f"Token：已就绪（来源：{source}）")
+            self.label_token.setText(f"Token：已就绪 · 来源 {source}")
         else:
             self.label_token.setText(
                 f"Token：未设置 · 可设环境变量 GH_TOKEN，或点右侧保存到 {TOKEN_FILE_NAME}")
@@ -1251,9 +1251,9 @@ class ReleaseDialog(QDialog):
         self.combo_tool.clear()
         for entry in self.existing_entries:
             self.combo_tool.addItem(
-                f"{entry['name']}   →   Release「{entry['tag']}」（{entry['json_name']}）", entry)
+                f"{entry['name']}   →   Release「{entry['tag']}」 · {entry['json_name']}", entry)
         if not self.existing_entries:
-            self.combo_tool.addItem("（索引中还没有 Releases 直链条目）", None)
+            self.combo_tool.addItem("索引中还没有 Releases 直链条目", None)
 
     def selected_entry(self):
         return self.combo_tool.currentData()
@@ -1276,7 +1276,7 @@ class ReleaseDialog(QDialog):
 
     def browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择要发布的压缩包", "", "压缩包 (*.zip *.7z *.tar.gz);;所有文件 (*)")
+            self, "选择要发布的压缩包", "", "*.zip *.7z *.tar.gz;;*")
         if path:
             self.edit_file.setText(path)
 
@@ -1308,7 +1308,7 @@ class ReleaseDialog(QDialog):
             target_json = self.manager.index_name_for_folder(folder)
             self.label_preview.setText(
                 f"{release_download_url(tag, asset_name)}\n\n"
-                f"会写入 {target_json} 的 {folder} 目录（type=file）。")
+                f"会写入 {target_json} 的 {folder} 目录，type=file。")
         else:
             self.label_preview.setText("选择压缩包后会按分类与资产名生成链接。")
 
@@ -1317,7 +1317,7 @@ class ReleaseDialog(QDialog):
         text, ok = QInputDialog.getText(
             self, "设置 GitHub Token",
             "粘贴具有本仓库 Contents: read/write 权限的 PAT：\n"
-            f"（保存到 {self.manager.token_path()}，该文件已在 .gitignore 中）",
+            f"保存到 {self.manager.token_path()}，该文件已在 .gitignore 中",
             QLineEdit.Password, token or "")
         if not ok:
             return
@@ -1353,7 +1353,7 @@ class ReleaseDialog(QDialog):
             category = self.selected_category()
             asset_name = sanitize_asset_name(self.edit_asset_name.text())
             if not asset_name:
-                QMessageBox.warning(self, "缺少资产名", "请填写资产名（发布后保持不变）。")
+                QMessageBox.warning(self, "缺少资产名", "请填写资产名，发布后保持不变。")
                 return
             folder_path, tag, _title = category
             json_name = self.manager.index_name_for_folder(folder_path)
@@ -1381,11 +1381,11 @@ class ReleaseDialog(QDialog):
                 url = publish_tool_update(
                     token, entry["tag"], entry["asset_name"], file_path, log)
                 return {
-                    "summary": f"更新工具 {entry['name']}（Release「{entry['tag']}」）",
+                    "summary": f"更新工具 {entry['name']} · Release「{entry['tag']}」",
                     "url": url,
                     "json_name": entry["json_name"],
                 }
-            summary = f"更新工具 {entry['name']}（Release「{entry['tag']}」）"
+            summary = f"更新工具 {entry['name']} · Release「{entry['tag']}」"
 
         self.set_busy(True)
         self.append_log(f"— {summary} —")
